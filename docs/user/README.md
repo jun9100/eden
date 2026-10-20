@@ -20,6 +20,7 @@ A copy of this handbook is [available online](https://git.eden-emu.dev/eden-emu/
 - **[Graphics](Graphics.md)**
 - **[Installing Mods](./Mods.md)**
 - **[Data, Savefiles and Storage](Storage.md)**
+- **[Automatic Save Backup and Sync](SaveSync.md)**
 - **[Orphaned Profiles](Orphaned.md)**
 - **[Troubleshooting](./Troubleshoot.md)**
 - **[Using Amiibo](./UsingAmiibo.md)**

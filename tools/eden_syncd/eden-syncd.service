@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[Unit]
+Description=Eden Save Sync service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=eden-syncd
+Group=eden-syncd
+EnvironmentFile=/etc/eden-syncd.env
+ExecStart=/usr/local/bin/eden-syncd --data-dir /var/lib/eden-syncd --listen 127.0.0.1:8787
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/eden-syncd
+
+[Install]
+WantedBy=multi-user.target

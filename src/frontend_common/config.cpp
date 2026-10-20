@@ -815,7 +815,17 @@ std::string Config::ReadStringSetting(const std::string& key,
             config->GetValue(GetSection().c_str(), full_key.c_str(), default_value.value().c_str());
     }
     boost::replace_all(result, "\"", "");
-    boost::replace_all(result, "//", "/");
+    const auto scheme_separator = result.find("://");
+    if (scheme_separator == std::string::npos) {
+        boost::replace_all(result, "//", "/");
+        return result;
+    }
+
+    const auto path_start = scheme_separator + 3;
+    std::string path = result.substr(path_start);
+    boost::replace_all(path, "//", "/");
+    result.resize(path_start);
+    result.append(path);
     return result;
 }
 

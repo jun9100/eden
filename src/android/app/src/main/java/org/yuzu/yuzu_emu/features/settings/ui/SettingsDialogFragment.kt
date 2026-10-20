@@ -17,6 +17,7 @@ import android.view.ViewGroup
 import android.view.MotionEvent
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.isVisible
 import androidx.fragment.app.DialogFragment
@@ -264,6 +265,10 @@ class SettingsDialogFragment : DialogFragment(), DialogInterface.OnClickListener
             SettingsItem.TYPE_STRING_INPUT -> {
                 stringInputBinding = DialogEditTextBinding.inflate(layoutInflater)
                 val item = settingsViewModel.clickedItem as StringInputSetting
+                if (item.isSecret) {
+                    stringInputBinding.editText.inputType =
+                        InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                }
                 stringInputBinding.editText.setText(item.getSelectedValue())
 
                 val onGenerate = item.onGenerate
@@ -276,6 +281,8 @@ class SettingsDialogFragment : DialogFragment(), DialogInterface.OnClickListener
                 }
 
                 val validator = item.validator
+                var inputIsValid = true
+                var dialog: AlertDialog? = null
 
                 if (validator != null) {
                     val watcher = object : TextWatcher {
@@ -297,6 +304,7 @@ class SettingsDialogFragment : DialogFragment(), DialogInterface.OnClickListener
 
                         override fun afterTextChanged(s: Editable?) {
                             val isValid = validator(s.toString())
+                            inputIsValid = isValid
                             stringInputBinding.editTextLayout.isErrorEnabled = !isValid
                             stringInputBinding.editTextLayout.error = if (isValid) {
                                 null
@@ -305,6 +313,7 @@ class SettingsDialogFragment : DialogFragment(), DialogInterface.OnClickListener
                                     item.errorId
                                 )
                             }
+                            dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = isValid
                         }
                     }
 
@@ -312,12 +321,17 @@ class SettingsDialogFragment : DialogFragment(), DialogInterface.OnClickListener
                     watcher.afterTextChanged(stringInputBinding.editText.text)
                 }
 
-                MaterialAlertDialogBuilder(requireContext())
+                val inputDialog = MaterialAlertDialogBuilder(requireContext())
                     .setTitle(item.title)
                     .setView(stringInputBinding.root)
                     .setPositiveButton(android.R.string.ok, this)
                     .setNegativeButton(android.R.string.cancel, defaultCancelListener)
                     .create()
+                dialog = inputDialog
+                inputDialog.setOnShowListener {
+                    inputDialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = inputIsValid
+                }
+                inputDialog
             }
 
             SettingsItem.TYPE_STRING_SINGLE_CHOICE -> {

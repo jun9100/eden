@@ -36,5 +36,6 @@ private:
 
 private slots:
     void GenerateToken();
+    void GenerateSaveSyncKey();
     void VerifyLogin();
 };

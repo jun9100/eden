@@ -188,6 +188,13 @@ object NativeLibrary {
     external fun stopEmulation()
 
     /**
+     * Uploads snapshots left by a completed session.
+     *
+     * @return true when a network failure left work to retry.
+     */
+    external fun uploadPendingSaveSync(): Boolean
+
+    /**
      * Returns true if emulation is running (or is paused).
      */
     external fun isRunning(): Boolean

@@ -20,6 +20,7 @@ import android.content.res.Configuration
 import android.os.LocaleList
 import org.yuzu.yuzu_emu.features.settings.model.IntSetting
 import org.yuzu.yuzu_emu.utils.DirectoryInitialization
+import org.yuzu.yuzu_emu.save_sync.SaveSyncWorker
 import org.yuzu.yuzu_emu.utils.DocumentsTree
 import org.yuzu.yuzu_emu.utils.GpuDriverHelper
 import org.yuzu.yuzu_emu.utils.Log
@@ -62,6 +63,7 @@ class YuzuApplication : Application() {
         application = this
         documentsTree = DocumentsTree()
         DirectoryInitialization.start()
+        SaveSyncWorker.enqueue(this)
 
         // Initialize Freedreno config BEFORE loading native library
         // This ensures GPU driver environment variables are set before adrenotools initializes

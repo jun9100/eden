@@ -168,16 +168,12 @@ android {
             isJniDebuggable = true
         }
 
-        // Signed by debug key disallowing distribution on Play Store.
-        // Attaches 'debug' suffix to version and package name, allowing installation alongside the release build.
+        // Signed by the local debug key for development installations.
         debug {
             signingConfig = signingConfigs.getByName("default")
             isDebuggable = true
             isJniDebuggable = true
-            versionNameSuffix = "-debug"
-            applicationIdSuffix = ".debug"
-
-            manifestPlaceholders += mapOf("appNameSuffix" to " Debug")
+            manifestPlaceholders += mapOf("appNameSuffix" to "")
         }
     }
 
@@ -346,6 +342,7 @@ dependencies {
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.17.2")
     implementation("androidx.window:window:1.3.0")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    implementation("androidx.work:work-runtime:2.10.0")
     implementation("org.commonmark:commonmark:0.22.0")
     implementation("androidx.navigation:navigation-fragment-ktx:2.8.9")
     implementation("androidx.navigation:navigation-ui-ktx:2.8.9")

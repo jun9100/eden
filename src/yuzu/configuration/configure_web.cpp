@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: 2017 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <QCheckBox>
 #include <QIcon>
 #include <QMessageBox>
 #include "yuzu/configuration/configure_web.h"
@@ -29,21 +30,30 @@ ConfigureWeb::ConfigureWeb(QWidget* parent)
 #if QT_VERSION_MAJOR >= 6
     QRegularExpressionValidator* username_validator = new QRegularExpressionValidator(this);
     QRegularExpressionValidator* token_validator = new QRegularExpressionValidator(this);
+    QRegularExpressionValidator* save_sync_key_validator = new QRegularExpressionValidator(this);
 
     username_validator->setRegularExpression(QRegularExpression(user_regex));
     token_validator->setRegularExpression(QRegularExpression(token_regex));
+    save_sync_key_validator->setRegularExpression(
+        QRegularExpression(QStringLiteral("[0-9a-fA-F]{64}")));
 #else
     QRegExpValidator* username_validator = new QRegExpValidator(this);
     QRegExpValidator* token_validator = new QRegExpValidator(this);
+    QRegExpValidator* save_sync_key_validator = new QRegExpValidator(this);
 
     username_validator->setRegExp(QRegExp(user_regex));
     token_validator->setRegExp(QRegExp(token_regex));
+    save_sync_key_validator->setRegExp(QRegExp(QStringLiteral("[0-9a-fA-F]{64}")));
 #endif
 
     ui->edit_username->setValidator(username_validator);
     ui->edit_token->setValidator(token_validator);
 
+    ui->edit_save_sync_key->setValidator(save_sync_key_validator);
+
     connect(ui->button_generate, &QPushButton::clicked, this, &ConfigureWeb::GenerateToken);
+    connect(ui->button_generate_save_sync_key, &QPushButton::clicked, this,
+            &ConfigureWeb::GenerateSaveSyncKey);
 
 #ifndef USE_DISCORD_PRESENCE
     ui->discord_group->setVisible(false);
@@ -73,6 +83,15 @@ void ConfigureWeb::SetConfiguration() {
 
     ui->edit_username->setText(QString::fromStdString(Settings::values.eden_username.GetValue()));
     ui->edit_token->setText(QString::fromStdString(Settings::values.eden_token.GetValue()));
+    ui->toggle_save_sync->setChecked(Settings::values.save_sync_enabled.GetValue());
+    ui->toggle_save_sync_insecure_lan->setChecked(
+        Settings::values.save_sync_allow_insecure_lan.GetValue());
+    ui->edit_save_sync_url->setText(
+        QString::fromStdString(Settings::values.save_sync_url.GetValue()));
+    ui->edit_save_sync_token->setText(
+        QString::fromStdString(Settings::values.save_sync_token.GetValue()));
+    ui->edit_save_sync_key->setText(
+        QString::fromStdString(Settings::values.save_sync_key.GetValue()));
 
     VerifyLogin();
 
@@ -92,10 +111,25 @@ void ConfigureWeb::GenerateToken() {
     ui->edit_token->setText(result);
 }
 
+void ConfigureWeb::GenerateSaveSyncKey() {
+    constexpr size_t length = 64;
+    QString result;
+    constexpr auto hex = "0123456789abcdef";
+    for (size_t i = 0; i < length; ++i) {
+        result.append(QChar::fromLatin1(hex[m_rng->bounded(16)]));
+    }
+    ui->edit_save_sync_key->setText(result);
+}
+
 void ConfigureWeb::ApplyConfiguration() {
     UISettings::values.enable_discord_presence = ui->toggle_discordrpc->isChecked();
     Settings::values.eden_username = ui->edit_username->text().toStdString();
     Settings::values.eden_token = ui->edit_token->text().toStdString();
+    Settings::values.save_sync_enabled = ui->toggle_save_sync->isChecked();
+    Settings::values.save_sync_allow_insecure_lan = ui->toggle_save_sync_insecure_lan->isChecked();
+    Settings::values.save_sync_url = ui->edit_save_sync_url->text().toStdString();
+    Settings::values.save_sync_token = ui->edit_save_sync_token->text().toStdString();
+    Settings::values.save_sync_key = ui->edit_save_sync_key->text().toStdString();
 }
 
 void ConfigureWeb::VerifyLogin() {

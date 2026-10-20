@@ -136,6 +136,8 @@ add_library(core STATIC
     file_sys/romfs_factory.h
     file_sys/savedata_factory.cpp
     file_sys/savedata_factory.h
+    save_sync/save_sync.cpp
+    save_sync/save_sync.h
     file_sys/sdmc_factory.cpp
     file_sys/sdmc_factory.h
     file_sys/submission_package.cpp

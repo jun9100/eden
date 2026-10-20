@@ -1,0 +1,58 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          modules: qtcharts qttools
+
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2.2
+        with:
+          version: 1.4.304.1
+          cache: true
+
+      - name: Configure Release build
+        shell: pwsh
+        run: >-
+          cmake -S . -B build-windows -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DYUZU_TESTS=OFF
+          -DENABLE_QT_TRANSLATION=ON
+          -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+
+      - name: Build Eden
+        run: cmake --build build-windows --config Release --target yuzu
+
+      - name: Package Windows application
+        shell: pwsh
+        run: |
+          $package = 'eden-windows-x64'
+          New-Item -ItemType Directory -Force $package | Out-Null
+          Copy-Item 'build-windows/bin/eden.exe' $package
+          windeployqt --release --dir $package "$package/eden.exe"
+          if (Test-Path 'build-windows/dist/languages') {
+            Copy-Item 'build-windows/dist/languages' "$package/languages" -Recurse
+          }
+          Compress-Archive -Path "$package/*" -DestinationPath 'eden-windows-x64-release.zip'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eden-windows-x64-release
+          path: eden-windows-x64-release.zip
+          if-no-files-found: error

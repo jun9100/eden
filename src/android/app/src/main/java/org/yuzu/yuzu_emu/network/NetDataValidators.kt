@@ -7,6 +7,7 @@ import android.content.Context
 import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.features.settings.model.StringSetting
 import java.net.InetAddress
+import java.net.URI
 
 object NetDataValidators {
     fun roomName(s: String): Boolean {
@@ -23,6 +24,42 @@ object NetDataValidators {
 
     fun token(): Boolean {
         return token(StringSetting.WEB_TOKEN.getString())
+    }
+
+    fun saveSyncKey(s: String?): Boolean {
+        return s?.matches(Regex("[0-9a-fA-F]{64}")) == true
+    }
+
+    fun saveSyncUrl(s: String?): Boolean {
+        if (s.isNullOrBlank() || s.any(Char::isWhitespace)) {
+            return false
+        }
+        return try {
+            val uri = URI(s)
+            val host = uri.host ?: return false
+            if (uri.userInfo != null) {
+                return false
+            }
+            when (uri.scheme?.lowercase()) {
+                "https" -> true
+                "http" -> host.equals("localhost", ignoreCase = true) ||
+                    host == "127.0.0.1" || host == "::1" || host == "[::1]" ||
+                    isPrivateIpv4Address(host)
+                else -> false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isPrivateIpv4Address(host: String): Boolean {
+        val octets = host.split('.')
+        if (octets.size != 4) return false
+        val values = octets.map { it.toIntOrNull() ?: return false }
+        if (values.any { it !in 0..255 }) return false
+        return values[0] == 10 || values[0] == 127 ||
+            (values[0] == 172 && values[1] in 16..31) ||
+            (values[0] == 192 && values[1] == 168)
     }
 
     fun roomVisibility(s: String, context: Context): Boolean {

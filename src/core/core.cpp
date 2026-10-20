@@ -18,7 +18,6 @@
 #include "core/arm/exclusive_monitor.h"
 #include "core/core.h"
 
-#include "launch_timestamp_cache.h"
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/debugger/debugger.h"
@@ -59,9 +58,11 @@
 #include "core/memory/cheat_engine.h"
 #include "core/perf_stats.h"
 #include "core/reporter.h"
+#include "core/save_sync/save_sync.h"
 #include "core/tools/freezer.h"
 #include "core/tools/renderdoc.h"
 #include "hid_core/hid_core.h"
+#include "launch_timestamp_cache.h"
 #include "network/network.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
@@ -433,6 +434,7 @@ struct System::Impl {
         services.reset();
         service_manager.reset();
         fs_controller.Reset();
+        save_sync_manager.CompleteSession();
         cheat_engine.reset();
         core_timing.ClearPendingEvents();
         app_loader.reset();
@@ -520,6 +522,7 @@ struct System::Impl {
 
     /// Service manager
     std::shared_ptr<Service::SM::ServiceManager> service_manager;
+    SaveSync::Manager save_sync_manager;
     /// ContentProviderUnion instance
     std::unique_ptr<FileSys::ContentProviderUnion> content_provider;
     /// AppLoader used to load the current executing application
@@ -576,6 +579,10 @@ bool System::IsPaused() const {
 
 void System::ShutdownMainProcess() {
     impl->ShutdownMainProcess();
+}
+
+SaveSync::Manager& System::GetSaveSyncManager() {
+    return impl->save_sync_manager;
 }
 
 bool System::IsShuttingDown() const {

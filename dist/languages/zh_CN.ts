@@ -5797,6 +5797,41 @@ Drag points to change position, or double-click table cells to edit values.</sou
         <translation>公共房间未被创建时，才能更改网络服务设置。</translation>
     </message>
     <message>
+        <location filename="../../src/yuzu/configuration/configure_web.ui" line="140"/>
+        <source>Save Sync</source>
+        <translation>存档同步</translation>
+    </message>
+    <message>
+        <location filename="../../src/yuzu/configuration/configure_web.ui" line="146"/>
+        <source>Enable automatic save backup and sync</source>
+        <translation>启用自动存档备份和同步</translation>
+    </message>
+    <message>
+        <location filename="../../src/yuzu/configuration/configure_web.ui" line="153"/>
+        <source>Save data remains encrypted, but the server token can be intercepted on the local network.</source>
+        <translation>存档仍会加密，但服务器令牌可能会在本地网络中被截获。</translation>
+    </message>
+    <message>
+        <location filename="../../src/yuzu/configuration/configure_web.ui" line="156"/>
+        <source>Allow insecure HTTP for private LAN IP addresses</source>
+        <translation>允许私有局域网 IP 使用不安全的 HTTP</translation>
+    </message>
+    <message>
+        <location filename="../../src/yuzu/configuration/configure_web.ui" line="163"/>
+        <source>Server URL:</source>
+        <translation>服务器地址:</translation>
+    </message>
+    <message>
+        <location filename="../../src/yuzu/configuration/configure_web.ui" line="177"/>
+        <source>Server token:</source>
+        <translation>服务器令牌:</translation>
+    </message>
+    <message>
+        <location filename="../../src/yuzu/configuration/configure_web.ui" line="191"/>
+        <source>Vault key:</source>
+        <translation>保险库密钥:</translation>
+    </message>
+    <message>
         <location filename="../../src/yuzu/configuration/configure_web.ui" line="142"/>
         <source>Discord Presence</source>
         <translation>Discord 状态</translation>

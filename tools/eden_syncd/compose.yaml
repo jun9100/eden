@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+services:
+  eden-syncd:
+    build: .
+    image: eden-syncd:local
+    environment:
+      EDEN_SYNCD_TOKEN: ${EDEN_SYNCD_TOKEN:?set EDEN_SYNCD_TOKEN in .env}
+      # Optional. Enables the protected LAN dashboard at /admin/.
+      EDEN_SYNCD_ADMIN_TOKEN: ${EDEN_SYNCD_ADMIN_TOKEN:-}
+    ports:
+      - "${EDEN_SYNCD_BIND_ADDRESS:-127.0.0.1}:${EDEN_SYNCD_PORT:-8787}:8787"
+    volumes:
+      - ${EDEN_SYNCD_DATA_DIR:-./data}:/var/lib/eden-syncd
+    restart: unless-stopped

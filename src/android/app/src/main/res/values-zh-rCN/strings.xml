@@ -531,6 +531,19 @@
     <string name="web_username">网络用户名</string>
     <string name="web_username_description">在多人游戏大厅中显示的用户名。用户名必须为4至20个字符，且仅可包含字母、数字、连字符、点号、下划线和空格。</string>
     <string name="network">网络</string>
+    <string name="save_sync">存档同步</string>
+    <string name="save_sync_description">配置自动存档备份和同步。</string>
+    <string name="save_sync_enabled">启用存档同步</string>
+    <string name="save_sync_allow_insecure_lan">允许不安全的局域网 HTTP</string>
+    <string name="save_sync_allow_insecure_lan_description">仅允许私有局域网 IP 使用 HTTP。存档仍会加密，但服务器令牌可能被截获；HTTPS 时请保持关闭。</string>
+    <string name="save_sync_url">同步服务器地址</string>
+    <string name="save_sync_url_description">您的 eden-syncd 服务的 HTTPS 地址；明确启用后也可使用私有局域网 HTTP 地址。</string>
+    <string name="save_sync_url_error">必须是有效的 HTTPS 地址、本机 HTTP 地址或私有局域网 IP HTTP 地址。</string>
+    <string name="save_sync_token">同步服务器令牌</string>
+    <string name="save_sync_token_description">eden-syncd 配置的 Bearer 令牌。</string>
+    <string name="save_sync_key">保险库密钥</string>
+    <string name="save_sync_key_description">仅在您的 Eden 设备间共享的 64 字符十六进制密钥。</string>
+    <string name="save_sync_key_error">必须正好为 64 个十六进制字符。</string>
 
     <!-- Graphics settings strings -->
     <string name="renderer_resolution">分辨率 (掌机模式/主机模式)</string>

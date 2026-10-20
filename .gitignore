@@ -64,5 +64,10 @@ artifacts
 vulkansdk*.exe
 *.tar.zst
 
+# Local Switch test assets. Never publish firmware, keys, or game images.
+*.xci
+Firmware*.zip
+prod.keys
+
 # Build-time generated external sources
 externals/generated

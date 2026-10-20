@@ -134,6 +134,88 @@
        </property>
       </widget>
      </item>
+     <item>
+      <widget class="QGroupBox" name="groupBoxSaveSync">
+       <property name="title">
+        <string>Save Sync</string>
+       </property>
+       <layout class="QGridLayout" name="gridLayoutSaveSync">
+        <item row="0" column="0" colspan="2">
+         <widget class="QCheckBox" name="toggle_save_sync">
+          <property name="text">
+           <string>Enable automatic save backup and sync</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0" colspan="2">
+         <widget class="QCheckBox" name="toggle_save_sync_insecure_lan">
+          <property name="toolTip">
+           <string>Save data remains encrypted, but the server token can be intercepted on the local network.</string>
+          </property>
+          <property name="text">
+           <string>Allow insecure HTTP for private LAN IP addresses</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="label_save_sync_url">
+          <property name="text">
+           <string>Server URL:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QLineEdit" name="edit_save_sync_url">
+          <property name="placeholderText">
+           <string>https://eden-sync.example.net</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="0">
+         <widget class="QLabel" name="label_save_sync_token">
+          <property name="text">
+           <string>Server token:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QLineEdit" name="edit_save_sync_token">
+          <property name="echoMode">
+           <enum>QLineEdit::EchoMode::Password</enum>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="0">
+         <widget class="QLabel" name="label_save_sync_key">
+          <property name="text">
+           <string>Vault key:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="1">
+         <layout class="QHBoxLayout" name="horizontalLayoutSaveSyncKey">
+          <item>
+           <widget class="QLineEdit" name="edit_save_sync_key">
+            <property name="echoMode">
+             <enum>QLineEdit::EchoMode::Password</enum>
+            </property>
+            <property name="maxLength">
+             <number>64</number>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="button_generate_save_sync_key">
+            <property name="text">
+             <string>Generate</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
     </layout>
    </item>
    <item>

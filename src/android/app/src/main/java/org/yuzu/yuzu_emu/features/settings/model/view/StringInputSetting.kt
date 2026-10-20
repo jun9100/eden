@@ -17,7 +17,8 @@ class StringInputSetting(
     descriptionString: String = "",
     val onGenerate: (() -> String)? = null,
     val validator: ((s: String?) -> Boolean)? = null,
-    @StringRes val errorId: Int = 0
+    @StringRes val errorId: Int = 0,
+    val isSecret: Boolean = false
 ) : SettingsItem(setting, titleId, titleString, descriptionId, descriptionString) {
     override val type = TYPE_STRING_INPUT
 

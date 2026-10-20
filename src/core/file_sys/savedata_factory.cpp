@@ -11,6 +11,7 @@
 #include "core/core.h"
 #include "core/file_sys/savedata_factory.h"
 #include "core/file_sys/vfs/vfs.h"
+#include "core/save_sync/save_sync.h"
 
 namespace FileSys {
 
@@ -64,6 +65,9 @@ SaveDataFactory::~SaveDataFactory() = default;
 VirtualDir SaveDataFactory::Create(SaveDataSpaceId space, const SaveDataAttribute& meta) const {
     const auto save_directory = GetFullPath(program_id, dir, space, meta.type, meta.program_id,
                                             meta.user_id, meta.system_save_data_id);
+    const auto title_id = meta.program_id == 0 ? program_id : meta.program_id;
+    system.GetSaveSyncManager().TrackSaveData(space, meta.type, title_id, meta.user_id,
+                                              save_directory);
 
     return dir->CreateDirectoryRelative(save_directory);
 }
@@ -72,6 +76,9 @@ VirtualDir SaveDataFactory::Open(SaveDataSpaceId space, const SaveDataAttribute&
 
     const auto save_directory = GetFullPath(program_id, dir, space, meta.type, meta.program_id,
                                             meta.user_id, meta.system_save_data_id);
+    const auto title_id = meta.program_id == 0 ? program_id : meta.program_id;
+    system.GetSaveSyncManager().TrackSaveData(space, meta.type, title_id, meta.user_id,
+                                              save_directory);
 
     auto out = dir->GetDirectoryRelative(save_directory);
 

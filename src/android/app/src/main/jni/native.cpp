@@ -32,6 +32,7 @@
 #include <common/fs/fs.h>
 #include <core/file_sys/patch_manager.h>
 #include <core/file_sys/savedata_factory.h>
+#include <core/save_sync/save_sync.h>
 #include <core/loader/nro.h>
 #include <frontend_common/content_manager.h>
 #include <jni.h>
@@ -936,6 +937,11 @@ void Java_org_yuzu_yuzu_1emu_NativeLibrary_pauseEmulation(JNIEnv* env, jclass cl
 
 void Java_org_yuzu_yuzu_1emu_NativeLibrary_stopEmulation(JNIEnv* env, jclass clazz) {
     EmulationSession::GetInstance().HaltEmulation();
+}
+
+jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_uploadPendingSaveSync(JNIEnv* env, jclass clazz) {
+    return static_cast<jboolean>(
+        EmulationSession::GetInstance().System().GetSaveSyncManager().UploadPending());
 }
 
 jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_isRunning(JNIEnv* env, jclass clazz) {

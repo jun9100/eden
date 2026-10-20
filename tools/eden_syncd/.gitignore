@@ -1,0 +1,3 @@
+# Deployment secrets and encrypted runtime data.
+.env
+data/

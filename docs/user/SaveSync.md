@@ -1,0 +1,103 @@
+<!--
+SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!-- lang: en-GB -->
+
+# Save Sync
+
+Eden Save Sync creates an encrypted, versioned snapshot after a game closes, then uploads it to an
+`eden-syncd` service you control. It synchronizes account saves and device saves only. Game files,
+keys, firmware, complete NAND images, SDMC data, mods, shader caches, and logs are never sent.
+Each encrypted snapshot is authenticated to its save scope, so the server cannot substitute it into
+another title or user scope.
+
+Before launching a game, Eden checks the matching remote scope. If the local save directory is empty,
+it downloads, verifies, decrypts, and installs the latest snapshot. Existing local data is never
+overwritten automatically. If two devices change the same scope independently, the later upload is
+kept as a local conflict snapshot instead of overwriting the server version.
+
+## Configure Eden
+
+On desktop, open `Emulation > Configure > General > Web`. On Android, open the gear icon and
+choose **Save Sync**. In the Save Sync section, enable automatic save backup and sync, then enter:
+
+- The HTTPS URL of your `eden-syncd` installation. For an isolated home LAN, you can explicitly
+  allow HTTP and use a private IPv4 address (`10.0.0.0/8`, `172.16.0.0/12`, or
+  `192.168.0.0/16`). This does not expose the save plaintext, which remains encrypted, but it does
+  expose the bearer token to anyone able to observe that network. Never enable it for a public
+  endpoint.
+- The bearer token configured on the server.
+- A 64-character hexadecimal Vault key shared by every device in the same sync group. Use the
+  Generate button on one trusted device, then transfer the key using a private channel.
+
+These are global settings, so they apply to every game. Save Sync uses the account UUID and title
+ID as its account-save scope. Use the same Eden profile on every device that should share an
+account save.
+
+Snapshots are written under Eden's cache directory before any network transfer. Failed uploads stay
+in the local queue. Android retries them after the app starts and after emulation stops; desktop
+builds retry while Eden remains open and on the next game launch.
+
+## Host eden-syncd
+
+The server source, Docker image, and Compose definition are in
+[`tools/eden_syncd`](../../tools/eden_syncd). On a NAS with Docker Compose:
+
+```sh
+cd tools/eden_syncd
+mkdir data
+chown 10001 data
+printf 'EDEN_SYNCD_TOKEN=replace-with-a-long-random-token\n' > .env
+docker compose up -d --build
+```
+
+Run the service behind HTTPS. Tailscale is the recommended home-NAS setup because it avoids
+opening a public port. If you publish it on the Internet, use a reverse proxy with a valid TLS
+certificate; do not expose the HTTP listener directly.
+
+Compose binds the service to `127.0.0.1:8787` by default. Set `EDEN_SYNCD_PORT` when that port is
+occupied. Set `EDEN_SYNCD_BIND_ADDRESS` only when an upstream firewall or Tailscale configuration
+restricts access. Set `EDEN_SYNCD_DATA_DIR` to place the persistent encrypted data on a NAS volume.
+When Docker image pulls are unavailable, the service source also includes an
+[`eden-syncd.service`](../../tools/eden_syncd/eden-syncd.service) systemd template.
+
+### LAN dashboard
+
+`eden-syncd` can expose a small administrator dashboard at `/admin/`. Add a separate,
+long random `EDEN_SYNCD_ADMIN_TOKEN` to the Compose `.env` file (or systemd
+`/etc/eden-syncd.env`), restart the service, and open
+`http://<private-NAS-IP>:<port>/admin/` on the home LAN. HTTP Basic Auth will prompt for it;
+the username is arbitrary and the password is the administrator token.
+
+The dashboard lists encrypted snapshot scopes, history and storage consumption. The server cannot
+know which game or account an opaque encrypted scope belongs to, so an administrator can manually
+set a display name and Logo URL for each scope. These display labels are held separately from the
+saves and do not modify game files or encrypted backups. Do not reuse the sync bearer token as the
+administrator token, and do not expose this page to the public Internet.
+
+### Private LAN HTTP
+
+For a network you control, bind the service to the NAS's fixed private address rather than all
+interfaces, for example `--listen 192.168.12.14:8788`. Do not create a router port-forward for
+this port. Configure each Eden device with `http://192.168.12.14:8788`, the same bearer token,
+and the same Vault key, then enable **Allow insecure LAN HTTP**. The client rejects public and
+hostname-based HTTP endpoints even with this option enabled.
+
+## Development testing
+
+For a local service:
+
+```sh
+cd tools/eden_syncd
+export EDEN_SYNCD_TOKEN=test-token
+go run . --data-dir ./data --listen 127.0.0.1:8787
+```
+
+When testing an Android device connected over USB, forward the local listener with:
+
+```sh
+adb reverse tcp:8787 tcp:8787
+```
+
+Use `http://127.0.0.1:8787` only for this local ADB test. Production configurations require HTTPS.

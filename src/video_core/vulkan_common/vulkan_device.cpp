@@ -986,7 +986,10 @@ bool Device::ShouldBoostClocks() const {
 }
 
 bool Device::HasTimelineSemaphore() const {
-    if (GetDriverID() == VK_DRIVER_ID_MESA_TURNIP) {
+    if (GetDriverID() == VK_DRIVER_ID_MESA_TURNIP || IsMoltenVK()) {
+        // MoltenVK can report a runtime error from vkGetSemaphoreCounterValue while the fence
+        // release worker is active. Use the existing fence fallback rather than letting that
+        // background exception terminate the emulator.
         return false;
     }
     return features.timeline_semaphore.timelineSemaphore;

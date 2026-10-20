@@ -904,11 +904,11 @@ struct Values {
     // GPU Logging
     Setting<GpuLogLevel> gpu_log_level{linkage, GpuLogLevel::Off, "gpu_log_level",
                                        Category::Debugging};
-    Setting<bool> gpu_log_vulkan_calls{linkage, true, "gpu_log_vulkan_calls", Category::Debugging};
+    Setting<bool> gpu_log_vulkan_calls{linkage, false, "gpu_log_vulkan_calls", Category::Debugging};
     Setting<bool> gpu_log_shader_dumps{linkage, false, "gpu_log_shader_dumps", Category::Debugging};
-    Setting<bool> gpu_log_memory_tracking{linkage, true, "gpu_log_memory_tracking",
+    Setting<bool> gpu_log_memory_tracking{linkage, false, "gpu_log_memory_tracking",
                                            Category::Debugging};
-    Setting<bool> gpu_log_driver_debug{linkage, true, "gpu_log_driver_debug", Category::Debugging};
+    Setting<bool> gpu_log_driver_debug{linkage, false, "gpu_log_driver_debug", Category::Debugging};
     Setting<s32> gpu_log_ring_buffer_size{linkage, 512, "gpu_log_ring_buffer_size",
                                            Category::Debugging};
 
@@ -936,10 +936,14 @@ struct Values {
     // WebService
     Setting<std::string> web_api_url{linkage, "api.ynet-fun.xyz", "web_api_url",
                                      Category::WebService};
-    Setting<std::string> eden_username{linkage, "Eden", "eden_username",
-                                       Category::WebService};
-    Setting<std::string> eden_token{linkage, "",
-                                    "eden_token", Category::WebService};
+    Setting<std::string> eden_username{linkage, "Eden", "eden_username", Category::WebService};
+    Setting<std::string> eden_token{linkage, "", "eden_token", Category::WebService};
+    Setting<bool> save_sync_enabled{linkage, false, "save_sync_enabled", Category::WebService};
+    Setting<bool> save_sync_allow_insecure_lan{linkage, false, "save_sync_allow_insecure_lan",
+                                               Category::WebService};
+    Setting<std::string> save_sync_url{linkage, "", "save_sync_url", Category::WebService};
+    Setting<std::string> save_sync_token{linkage, "", "save_sync_token", Category::WebService};
+    Setting<std::string> save_sync_key{linkage, "", "save_sync_key", Category::WebService};
 
     // Add-Ons
     std::map<u64, std::vector<std::string>> disabled_addons;

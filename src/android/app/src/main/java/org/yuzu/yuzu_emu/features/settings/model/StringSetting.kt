@@ -16,7 +16,10 @@ enum class StringSetting(override val key: String) : AbstractStringSetting {
     POST_SHADER_CHAIN("post_shader_chain"),
 
     WEB_TOKEN("eden_token"),
-    WEB_USERNAME("eden_username")
+    WEB_USERNAME("eden_username"),
+    SAVE_SYNC_URL("save_sync_url"),
+    SAVE_SYNC_TOKEN("save_sync_token"),
+    SAVE_SYNC_KEY("save_sync_key")
     ;
 
     override fun getString(needsGlobal: Boolean): String = NativeConfig.getString(key, needsGlobal)

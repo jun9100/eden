@@ -20,7 +20,8 @@ class StringInputViewHolder(val binding: ListItemSettingBinding, adapter: Settin
         binding.textSettingDescription.setVisible(setting.description.isNotEmpty())
         binding.textSettingDescription.text = setting.description
         binding.textSettingValue.setVisible(true)
-        binding.textSettingValue.text = setting.getSelectedValue()
+        val value = setting.getSelectedValue()
+        binding.textSettingValue.text = if (setting.isSecret && value.isNotEmpty()) "********" else value
 
         binding.buttonClear.setVisible(setting.clearable)
         binding.buttonClear.setOnClickListener {

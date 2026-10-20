@@ -117,14 +117,14 @@ void LogSettings() {
     std::deque<std::string> settings_list;
     for (auto& [category, settings] : values.linkage.by_category) {
         for (const auto& setting : settings) {
-            // Hide the token secret, for security reasons.
-            if (setting->Id() != values.eden_token.Id()) {
+            // Do not include authentication or encryption secrets in the log.
+            if (setting->Id() != values.eden_token.Id() &&
+                setting->Id() != values.save_sync_token.Id() &&
+                setting->Id() != values.save_sync_key.Id()) {
                 auto const is_default = setting->ToString() == setting->DefaultToString();
-                auto const name = fmt::format(
-                    "{:c}{:c} {}.{}",
-                    is_default ? '-' : 'M',
-                    setting->UsingGlobal() ? '-' : 'C', TranslateCategory(category),
-                    setting->GetLabel());
+                auto const name = fmt::format("{:c}{:c} {}.{}", is_default ? '-' : 'M',
+                                              setting->UsingGlobal() ? '-' : 'C',
+                                              TranslateCategory(category), setting->GetLabel());
                 if (is_default)
                     settings_list.push_back(fmt::format("{}: {}", name, setting->Canonicalize()));
                 else

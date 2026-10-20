@@ -122,6 +122,9 @@ class ExclusiveMonitor;
 class GPUDirtyMemoryManager;
 class PerfStats;
 class Reporter;
+namespace SaveSync {
+class Manager;
+}
 class SpeedLimiter;
 
 struct PerfStatsResults;
@@ -178,6 +181,8 @@ public:
 
     /// Shutdown the main emulated process.
     void ShutdownMainProcess();
+
+    SaveSync::Manager& GetSaveSyncManager();
 
     /// Check if the core is shutting down.
     [[nodiscard]] bool IsShuttingDown() const;

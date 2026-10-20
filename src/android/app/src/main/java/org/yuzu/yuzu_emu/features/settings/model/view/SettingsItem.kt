@@ -24,6 +24,7 @@ import org.yuzu.yuzu_emu.features.settings.model.UShortSetting
 import org.yuzu.yuzu_emu.network.NetDataValidators
 import org.yuzu.yuzu_emu.utils.LosslessScalingHelper
 import org.yuzu.yuzu_emu.utils.NativeConfig
+import java.security.SecureRandom
 
 /**
  * ViewModel abstraction for an Item in the RecyclerView powering SettingsFragments.
@@ -360,6 +361,55 @@ abstract class SettingsItem(
                     descriptionId = R.string.web_username_description,
                     validator = NetDataValidators::username,
                     errorId = R.string.multiplayer_username_error
+                )
+            )
+            put(
+                StringInputSetting(
+                    StringSetting.SAVE_SYNC_URL,
+                    titleId = R.string.save_sync_url,
+                    descriptionId = R.string.save_sync_url_description,
+                    validator = NetDataValidators::saveSyncUrl,
+                    errorId = R.string.save_sync_url_error
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.SAVE_SYNC_ENABLED,
+                    titleId = R.string.save_sync_enabled
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.SAVE_SYNC_ALLOW_INSECURE_LAN,
+                    titleId = R.string.save_sync_allow_insecure_lan,
+                    descriptionId = R.string.save_sync_allow_insecure_lan_description
+                )
+            )
+            put(
+                StringInputSetting(
+                    StringSetting.SAVE_SYNC_TOKEN,
+                    titleId = R.string.save_sync_token,
+                    descriptionId = R.string.save_sync_token_description,
+                    isSecret = true
+                )
+            )
+            put(
+                StringInputSetting(
+                    StringSetting.SAVE_SYNC_KEY,
+                    titleId = R.string.save_sync_key,
+                    descriptionId = R.string.save_sync_key_description,
+                    onGenerate = {
+                        val alphabet = "0123456789abcdef"
+                        val random = SecureRandom()
+                        buildString(64) {
+                            repeat(64) {
+                                append(alphabet[random.nextInt(alphabet.length)])
+                            }
+                        }
+                    },
+                    validator = NetDataValidators::saveSyncKey,
+                    errorId = R.string.save_sync_key_error,
+                    isSecret = true
                 )
             )
             put(DateTimeSetting(LongSetting.CUSTOM_RTC, titleId = R.string.set_custom_rtc))

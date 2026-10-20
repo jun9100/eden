@@ -547,6 +547,19 @@
     <string name="web_username">Web Username</string>
     <string name="web_username_description">Username to be shown in multiplayer lobbies. It must be 4–20 characters, containing only alphanumeric characters, dashes, periods, underscores, and spaces.</string>
     <string name="network">Network</string>
+    <string name="save_sync">Save Sync</string>
+    <string name="save_sync_description">Configure automatic save backup and sync.</string>
+    <string name="save_sync_enabled">Enable Save Sync</string>
+    <string name="save_sync_allow_insecure_lan">Allow insecure LAN HTTP</string>
+    <string name="save_sync_allow_insecure_lan_description">Allows HTTP only for private LAN IP addresses. Save data remains encrypted, but the server token can be intercepted. Keep this off for HTTPS.</string>
+    <string name="save_sync_url">Sync server URL</string>
+    <string name="save_sync_url_description">HTTPS URL of your eden-syncd service, or a private LAN HTTP address when explicitly enabled.</string>
+    <string name="save_sync_url_error">Must be a valid HTTPS URL, local HTTP URL, or private LAN IP HTTP URL.</string>
+    <string name="save_sync_token">Sync server token</string>
+    <string name="save_sync_token_description">Bearer token configured on eden-syncd.</string>
+    <string name="save_sync_key">Vault key</string>
+    <string name="save_sync_key_description">64-character hexadecimal key shared only by your Eden devices.</string>
+    <string name="save_sync_key_error">Must be exactly 64 hexadecimal characters.</string>
 
     <!-- Graphics settings strings -->
     <string name="renderer_resolution">Resolution (Handheld/Docked)</string>

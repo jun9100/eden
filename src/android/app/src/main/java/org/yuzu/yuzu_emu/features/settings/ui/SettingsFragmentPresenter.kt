@@ -169,6 +169,7 @@ class SettingsFragmentPresenter(
         val sl = ArrayList<SettingsItem>()
         when (menuTag) {
             MenuTag.SECTION_ROOT -> addConfigSettings(sl)
+            MenuTag.SECTION_SAVE_SYNC -> addSaveSyncSettings(sl)
             MenuTag.SECTION_SYSTEM -> addSystemSettings(sl)
             MenuTag.SECTION_RENDERER -> addGraphicsSettings(sl)
             MenuTag.SECTION_FRAME_GEN -> addFrameGenSettings(sl)
@@ -519,7 +520,26 @@ class SettingsFragmentPresenter(
                 add(HeaderSetting(R.string.network))
                 add(StringSetting.WEB_TOKEN.key)
                 add(StringSetting.WEB_USERNAME.key)
+                add(HeaderSetting(R.string.save_sync))
+                add(BooleanSetting.SAVE_SYNC_ENABLED.key)
+                add(BooleanSetting.SAVE_SYNC_ALLOW_INSECURE_LAN.key)
+                add(StringSetting.SAVE_SYNC_URL.key)
+                add(StringSetting.SAVE_SYNC_TOKEN.key)
+                add(StringSetting.SAVE_SYNC_KEY.key)
             }
+        }
+    }
+
+    private fun addSaveSyncSettings(sl: ArrayList<SettingsItem>) {
+        if (NativeConfig.isPerGameConfigLoaded()) {
+            return
+        }
+        sl.apply {
+            add(BooleanSetting.SAVE_SYNC_ENABLED.key)
+            add(BooleanSetting.SAVE_SYNC_ALLOW_INSECURE_LAN.key)
+            add(StringSetting.SAVE_SYNC_URL.key)
+            add(StringSetting.SAVE_SYNC_TOKEN.key)
+            add(StringSetting.SAVE_SYNC_KEY.key)
         }
     }
 
