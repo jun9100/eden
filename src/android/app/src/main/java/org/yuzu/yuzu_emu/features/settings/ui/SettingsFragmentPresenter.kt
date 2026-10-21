@@ -37,6 +37,7 @@ import org.yuzu.yuzu_emu.utils.FullscreenHelper
 import androidx.core.content.edit
 import androidx.fragment.app.FragmentActivity
 import org.yuzu.yuzu_emu.fragments.MessageDialogFragment
+import org.yuzu.yuzu_emu.save_sync.SaveSyncWorker
 
 class SettingsFragmentPresenter(
     private val settingsViewModel: SettingsViewModel,
@@ -520,12 +521,6 @@ class SettingsFragmentPresenter(
                 add(HeaderSetting(R.string.network))
                 add(StringSetting.WEB_TOKEN.key)
                 add(StringSetting.WEB_USERNAME.key)
-                add(HeaderSetting(R.string.save_sync))
-                add(BooleanSetting.SAVE_SYNC_ENABLED.key)
-                add(BooleanSetting.SAVE_SYNC_ALLOW_INSECURE_LAN.key)
-                add(StringSetting.SAVE_SYNC_URL.key)
-                add(StringSetting.SAVE_SYNC_TOKEN.key)
-                add(StringSetting.SAVE_SYNC_KEY.key)
             }
         }
     }
@@ -535,6 +530,29 @@ class SettingsFragmentPresenter(
             return
         }
         sl.apply {
+            val syncEnabled = BooleanSetting.SAVE_SYNC_ENABLED.getBoolean(
+                getNeedsGlobalForKey(BooleanSetting.SAVE_SYNC_ENABLED.key)
+            )
+            add(
+                RunnableSetting(
+                    titleId = R.string.save_sync_now,
+                    descriptionId = R.string.save_sync_now_description,
+                    isRunnable = syncEnabled,
+                    iconId = R.drawable.ic_refresh
+                ) {
+                    SaveSyncWorker.enqueue(context, activity) { state ->
+                        val message = when (state) {
+                            androidx.work.WorkInfo.State.ENQUEUED,
+                            androidx.work.WorkInfo.State.RUNNING,
+                            androidx.work.WorkInfo.State.BLOCKED -> R.string.save_sync_started
+                            androidx.work.WorkInfo.State.SUCCEEDED -> R.string.save_sync_completed
+                            androidx.work.WorkInfo.State.FAILED,
+                            androidx.work.WorkInfo.State.CANCELLED -> R.string.save_sync_failed
+                        }
+                        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
             add(BooleanSetting.SAVE_SYNC_ENABLED.key)
             add(BooleanSetting.SAVE_SYNC_ALLOW_INSECURE_LAN.key)
             add(StringSetting.SAVE_SYNC_URL.key)

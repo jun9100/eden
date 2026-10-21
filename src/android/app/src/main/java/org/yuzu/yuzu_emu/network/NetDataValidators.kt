@@ -27,7 +27,7 @@ object NetDataValidators {
     }
 
     fun saveSyncKey(s: String?): Boolean {
-        return s?.matches(Regex("[0-9a-fA-F]{64}")) == true
+        return s != null && s.length in 8..128 && s.none(Char::isWhitespace)
     }
 
     fun saveSyncUrl(s: String?): Boolean {

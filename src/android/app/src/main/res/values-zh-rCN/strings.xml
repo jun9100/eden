@@ -533,17 +533,22 @@
     <string name="network">网络</string>
     <string name="save_sync">存档同步</string>
     <string name="save_sync_description">配置自动存档备份和同步。</string>
-    <string name="save_sync_enabled">启用存档同步</string>
+    <string name="save_sync_enabled">启用自动存档同步</string>
+    <string name="save_sync_now">立即同步</string>
+    <string name="save_sync_now_description">立即上传待同步的加密存档快照，不会覆盖设备上已有的本地存档。</string>
+    <string name="save_sync_started">已加入存档同步队列</string>
+    <string name="save_sync_completed">存档同步完成</string>
+    <string name="save_sync_failed">存档同步失败，将在条件满足时重试</string>
     <string name="save_sync_allow_insecure_lan">允许不安全的局域网 HTTP</string>
     <string name="save_sync_allow_insecure_lan_description">仅允许私有局域网 IP 使用 HTTP。存档仍会加密，但服务器令牌可能被截获；HTTPS 时请保持关闭。</string>
     <string name="save_sync_url">同步服务器地址</string>
     <string name="save_sync_url_description">您的 eden-syncd 服务的 HTTPS 地址；明确启用后也可使用私有局域网 HTTP 地址。</string>
     <string name="save_sync_url_error">必须是有效的 HTTPS 地址、本机 HTTP 地址或私有局域网 IP HTTP 地址。</string>
     <string name="save_sync_token">同步服务器令牌</string>
-    <string name="save_sync_token_description">eden-syncd 配置的 Bearer 令牌。</string>
-    <string name="save_sync_key">保险库密钥</string>
-    <string name="save_sync_key_description">仅在您的 Eden 设备间共享的 64 字符十六进制密钥。</string>
-    <string name="save_sync_key_error">必须正好为 64 个十六进制字符。</string>
+    <string name="save_sync_token_description">eden-syncd 配置的同步 Bearer 令牌，不是后台网页的管理员密码。</string>
+    <string name="save_sync_key">保险库密钥或口令</string>
+    <string name="save_sync_key_description">在所有设备上输入相同的 8–128 位口令。服务器只保存密文。已有备份仍支持 64 位十六进制密钥；更换此值会创建新的同步组。</string>
+    <string name="save_sync_key_error">请输入 8–128 个不含空格的字符。</string>
 
     <!-- Graphics settings strings -->
     <string name="renderer_resolution">分辨率 (掌机模式/主机模式)</string>

@@ -7,6 +7,7 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cctype>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
@@ -55,6 +56,8 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 constexpr std::size_t EncryptionKeySize{32};
+constexpr std::string_view PassphraseSalt{"Eden Save Sync passphrase v1"};
+constexpr int PassphraseIterations{100000};
 constexpr std::size_t GcmNonceSize{12};
 constexpr std::size_t GcmTagSize{16};
 constexpr std::size_t HashSize{32};
@@ -126,6 +129,27 @@ std::optional<std::array<u8, EncryptionKeySize>> DecodeKey(std::string_view enco
             return std::nullopt;
         }
         key[index] = static_cast<u8>((*high << 4U) | *low);
+    }
+    return key;
+}
+
+std::optional<std::array<u8, EncryptionKeySize>> DeriveKey(std::string_view value) {
+    if (const auto legacy_key = DecodeKey(value)) {
+        return legacy_key;
+    }
+    if (value.size() < 8 || value.size() > 128 ||
+        std::any_of(value.begin(), value.end(), [](char character) {
+            return std::isspace(static_cast<unsigned char>(character)) != 0;
+        })) {
+        return std::nullopt;
+    }
+
+    std::array<u8, EncryptionKeySize> key{};
+    if (PKCS5_PBKDF2_HMAC(value.data(), static_cast<int>(value.size()),
+                          reinterpret_cast<const unsigned char*>(PassphraseSalt.data()),
+                          static_cast<int>(PassphraseSalt.size()), PassphraseIterations,
+                          EVP_sha256(), static_cast<int>(key.size()), key.data()) != 1) {
+        return std::nullopt;
     }
     return key;
 }
@@ -255,9 +279,9 @@ std::optional<Configuration> ReadConfiguration() {
         return std::nullopt;
     }
 
-    const auto decoded_key = DecodeKey(key);
+    const auto decoded_key = DeriveKey(key);
     if (!decoded_key) {
-        LOG_ERROR(Core, "Save Sync is disabled because EDEN_SYNC_KEY is not a 32-byte hex key");
+        LOG_ERROR(Core, "Save Sync is disabled because EDEN_SYNC_KEY is not a valid legacy hex key or passphrase");
         return std::nullopt;
     }
 

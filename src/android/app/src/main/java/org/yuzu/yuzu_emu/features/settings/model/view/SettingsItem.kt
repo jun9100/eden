@@ -399,10 +399,10 @@ abstract class SettingsItem(
                     titleId = R.string.save_sync_key,
                     descriptionId = R.string.save_sync_key_description,
                     onGenerate = {
-                        val alphabet = "0123456789abcdef"
+                        val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
                         val random = SecureRandom()
-                        buildString(64) {
-                            repeat(64) {
+                        buildString(24) {
+                            repeat(24) {
                                 append(alphabet[random.nextInt(alphabet.length)])
                             }
                         }
