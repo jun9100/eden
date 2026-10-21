@@ -15,6 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install shader tools
+        run: brew install glslang
+
       - name: Configure Release build
         run: >-
           cmake -S . -B build-macos -G Ninja
