@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cctype>
@@ -18,6 +19,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -168,6 +170,20 @@ std::optional<std::array<u8, EncryptionKeySize>> DeriveKey(std::string_view valu
     return key;
 }
 
+// PBKDF2 is deliberately slow (around 100 ms on a phone) and ReadConfiguration runs on every save
+// open and sync pass, so reuse the key derived from the most recent input.
+std::optional<std::array<u8, EncryptionKeySize>> DeriveKeyCached(std::string_view value) {
+    static std::mutex mutex;
+    static std::string cached_input;
+    static std::optional<std::array<u8, EncryptionKeySize>> cached_key;
+    std::scoped_lock lock{mutex};
+    if (!cached_key || cached_input != value) {
+        cached_key = DeriveKey(value);
+        cached_input = cached_key ? std::string{value} : std::string{};
+    }
+    return cached_key;
+}
+
 bool IsPrivateIpv4Address(std::string_view host) {
     std::array<unsigned int, 4> octets{};
     std::size_t start{};
@@ -293,7 +309,7 @@ std::optional<Configuration> ReadConfiguration() {
         return std::nullopt;
     }
 
-    const auto decoded_key = DeriveKey(key);
+    const auto decoded_key = DeriveKeyCached(key);
     if (!decoded_key) {
         LOG_ERROR(Core, "Save Sync is disabled because EDEN_SYNC_KEY is not a valid legacy hex key or passphrase");
         return std::nullopt;
@@ -358,6 +374,22 @@ std::optional<std::array<u8, HashSize>> ScopeDigest(const Configuration& configu
     std::array<u8, HashSize> result{};
     std::copy_n(digest.begin(), result.size(), result.begin());
     return result;
+}
+
+// Keyed digest of a plaintext archive, used to skip snapshots whose contents did not change. It is
+// stored locally only; keying it prevents the cache from revealing anything about save contents.
+// Archives begin with ArchiveMagic, so this cannot collide with a ScopeDigest input.
+std::optional<std::string> ContentDigest(const Configuration& configuration,
+                                         std::span<const u8> archive) {
+    std::array<u8, EVP_MAX_MD_SIZE> digest{};
+    unsigned int length{};
+    const auto* output = HMAC(EVP_sha256(), configuration.encryption_key.data(),
+                              static_cast<int>(configuration.encryption_key.size()), archive.data(),
+                              archive.size(), digest.data(), &length);
+    if (output == nullptr || length != HashSize) {
+        return std::nullopt;
+    }
+    return HexEncode(std::span<const u8>{digest.data(), HashSize});
 }
 
 void AppendU32(std::vector<u8>& output, u32 value) {
@@ -476,7 +508,11 @@ std::optional<std::vector<u8>> Encrypt(const Configuration& configuration,
     if (context == nullptr) {
         return std::nullopt;
     }
-    std::vector<u8> ciphertext(plaintext.size() + EVP_MAX_BLOCK_LENGTH);
+    // Layout: magic, nonce, tag, ciphertext. Encrypt in place after the header so the snapshot is
+    // not held twice in memory.
+    constexpr std::size_t header_size = EncryptedBlobMagic.size() + GcmNonceSize + GcmTagSize;
+    std::vector<u8> output(header_size + plaintext.size() + EVP_MAX_BLOCK_LENGTH);
+    u8* const ciphertext = output.data() + header_size;
     int aad_length{};
     int output_length{};
     int final_length{};
@@ -489,9 +525,9 @@ std::optional<std::vector<u8>> Encrypt(const Configuration& configuration,
         EVP_EncryptUpdate(context, nullptr, &aad_length,
                           reinterpret_cast<const u8*>(scope_id.data()),
                           static_cast<int>(scope_id.size())) == 1 &&
-        EVP_EncryptUpdate(context, ciphertext.data(), &output_length, plaintext.data(),
+        EVP_EncryptUpdate(context, ciphertext, &output_length, plaintext.data(),
                           static_cast<int>(plaintext.size())) == 1 &&
-        EVP_EncryptFinal_ex(context, ciphertext.data() + output_length, &final_length) == 1;
+        EVP_EncryptFinal_ex(context, ciphertext + output_length, &final_length) == 1;
     std::array<u8, GcmTagSize> tag{};
     const bool got_tag =
         succeeded && EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_GET_TAG,
@@ -500,12 +536,10 @@ std::optional<std::vector<u8>> Encrypt(const Configuration& configuration,
     if (!got_tag) {
         return std::nullopt;
     }
-    ciphertext.resize(static_cast<std::size_t>(output_length + final_length));
-
-    std::vector<u8> output{EncryptedBlobMagic.begin(), EncryptedBlobMagic.end()};
-    output.insert(output.end(), nonce.begin(), nonce.end());
-    output.insert(output.end(), tag.begin(), tag.end());
-    output.insert(output.end(), ciphertext.begin(), ciphertext.end());
+    output.resize(header_size + static_cast<std::size_t>(output_length + final_length));
+    auto cursor = std::copy(EncryptedBlobMagic.begin(), EncryptedBlobMagic.end(), output.begin());
+    cursor = std::copy(nonce.begin(), nonce.end(), cursor);
+    std::copy(tag.begin(), tag.end(), cursor);
     return output;
 }
 
@@ -723,6 +757,10 @@ fs::path KnownHeadsPath() {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" / "heads.json";
 }
 
+fs::path KnownContentsPath() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" / "contents.json";
+}
+
 bool WriteBytes(const fs::path& path, std::span<const u8> bytes) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     if (!output) {
@@ -756,11 +794,13 @@ bool WriteDescriptor(const PendingSnapshot& snapshot) {
     return !error;
 }
 
-std::map<std::string, std::string> ReadKnownHeads() {
-    const auto path = KnownHeadsPath();
+// Reads a JSON object mapping scope IDs to identifiers. Invalid entries are ignored; a missing or
+// damaged file is treated as empty, which only costs a redundant snapshot or a safe conflict.
+std::map<std::string, std::string> ReadScopeMap(const fs::path& path,
+                                                bool (*valid_value)(std::string_view)) {
     std::error_code error;
     const auto size = fs::file_size(path, error);
-    if (error || size > 64 * 1024) {
+    if (error || size > 1024 * 1024) {
         return {};
     }
 
@@ -769,19 +809,19 @@ std::map<std::string, std::string> ReadKnownHeads() {
         return {};
     }
     try {
-        const json heads = json::parse(input);
-        if (!heads.is_object()) {
+        const json values = json::parse(input);
+        if (!values.is_object()) {
             return {};
         }
 
         std::map<std::string, std::string> result;
-        for (const auto& [scope_id, snapshot_id] : heads.items()) {
-            if (!IsLowerHex(scope_id, HashSize * 2) || !snapshot_id.is_string()) {
+        for (const auto& [scope_id, value] : values.items()) {
+            if (!IsLowerHex(scope_id, HashSize * 2) || !value.is_string()) {
                 continue;
             }
-            const auto id = snapshot_id.get<std::string>();
-            if (IsIdentifier(id, 128)) {
-                result.emplace(scope_id, id);
+            const auto text = value.get<std::string>();
+            if (valid_value(text)) {
+                result.emplace(scope_id, text);
             }
         }
         return result;
@@ -790,8 +830,7 @@ std::map<std::string, std::string> ReadKnownHeads() {
     }
 }
 
-bool WriteKnownHeads(const std::map<std::string, std::string>& heads) {
-    const auto path = KnownHeadsPath();
+bool WriteScopeMap(const fs::path& path, const std::map<std::string, std::string>& values) {
     std::error_code error;
     fs::create_directories(path.parent_path(), error);
     if (error) {
@@ -803,7 +842,7 @@ bool WriteKnownHeads(const std::map<std::string, std::string>& heads) {
     if (!output) {
         return false;
     }
-    output << json(heads).dump();
+    output << json(values).dump();
     output.flush();
     output.close();
     if (!output) {
@@ -814,7 +853,7 @@ bool WriteKnownHeads(const std::map<std::string, std::string>& heads) {
         return true;
     }
 
-    // Windows does not replace an existing destination during rename. Losing a cached head is
+    // Windows does not replace an existing destination during rename. Losing a cached entry is
     // safe: the next upload uses an empty parent and becomes a conflict rather than overwriting.
     error.clear();
     fs::remove(path, error);
@@ -823,6 +862,14 @@ bool WriteKnownHeads(const std::map<std::string, std::string>& heads) {
     }
     fs::rename(temporary_path, path, error);
     return !error;
+}
+
+bool IsSnapshotIdentifier(std::string_view value) {
+    return IsIdentifier(value, 128);
+}
+
+bool IsContentDigest(std::string_view value) {
+    return IsLowerHex(value, HashSize * 2);
 }
 
 std::optional<PendingSnapshot> ReadDescriptor(const fs::path& descriptor_path) {
@@ -921,7 +968,7 @@ std::string DevicePlatform() {
 #endif
 }
 
-DeviceIdentity CurrentDeviceIdentity() {
+DeviceIdentity LoadDeviceIdentity() {
     const auto path = DeviceIdentityPath();
     std::ifstream input(path);
     if (input) {
@@ -975,8 +1022,15 @@ DeviceIdentity CurrentDeviceIdentity() {
     return identity;
 }
 
+// The identity is persisted on first use and never changes during a process, so read it once
+// instead of on every request.
+const DeviceIdentity& CurrentDeviceIdentity() {
+    static const DeviceIdentity identity = LoadDeviceIdentity();
+    return identity;
+}
+
 httplib::Headers RequestHeaders(const Configuration& configuration) {
-    const auto device = CurrentDeviceIdentity();
+    const auto& device = CurrentDeviceIdentity();
     return {
         {"Authorization", "Bearer " + configuration.token},
         {"User-Agent", "Eden-SaveSync/1"},
@@ -987,23 +1041,45 @@ httplib::Headers RequestHeaders(const Configuration& configuration) {
     };
 }
 
-void ConfigureClient(httplib::Client& client, bool writes = false) {
-    client.set_connection_timeout(std::chrono::seconds(5));
-    client.set_read_timeout(std::chrono::seconds(20));
-    client.set_payload_max_length(static_cast<std::size_t>(MaximumEncryptedSnapshotSize));
-    if (writes) {
-        client.set_write_timeout(std::chrono::seconds(20));
-    }
-    client.set_follow_location(false);
+// One client is reused for every request in a sync pass so the TCP and TLS handshakes happen once.
+std::unique_ptr<httplib::Client> MakeClient(const Configuration& configuration) {
+    auto client = std::make_unique<httplib::Client>(configuration.endpoint);
+    client->set_connection_timeout(std::chrono::seconds(5));
+    client->set_read_timeout(std::chrono::seconds(20));
+    client->set_write_timeout(std::chrono::seconds(20));
+    client->set_payload_max_length(static_cast<std::size_t>(MaximumEncryptedSnapshotSize));
+    client->set_keep_alive(true);
+    client->set_follow_location(false);
 #ifdef YUZU_BUNDLED_OPENSSL
-    client.load_ca_cert_store(kCert, sizeof(kCert));
+    client->load_ca_cert_store(kCert, sizeof(kCert));
 #endif
+    return client;
+}
+
+// The service is usually only reachable on the home network. After a connection failure, skip the
+// blocking checks done while a game opens its saves for a while, so an away-from-home device does
+// not wait for a connection timeout on every save. Background uploads keep retrying regardless.
+constexpr auto UnreachableBackoff = std::chrono::minutes(2);
+std::atomic<std::chrono::steady_clock::rep> unreachable_until{0};
+
+bool ServerRecentlyUnreachable() {
+    return std::chrono::steady_clock::now().time_since_epoch().count() <
+           unreachable_until.load(std::memory_order_relaxed);
+}
+
+void RecordReachability(bool reachable) {
+    const auto until = reachable ? std::chrono::steady_clock::rep{0}
+                                 : (std::chrono::steady_clock::now() + UnreachableBackoff)
+                                       .time_since_epoch()
+                                       .count();
+    unreachable_until.store(until, std::memory_order_relaxed);
 }
 
 std::optional<RemoteHead> GetRemoteHead(httplib::Client& client, const Configuration& configuration,
                                         std::string_view scope_id) {
     const auto response =
         client.Get(fmt::format("/v1/scopes/{}/head", scope_id), RequestHeaders(configuration));
+    RecordReachability(static_cast<bool>(response));
     if (!response) {
         LOG_WARNING(Core, "Save Sync could not fetch remote head for scope {}", scope_id);
         return std::nullopt;
@@ -1030,61 +1106,74 @@ std::optional<RemoteHead> GetRemoteHead(httplib::Client& client, const Configura
     }
 }
 
-bool RestoreRemoteSnapshot(const Configuration& configuration, std::string_view scope_id,
-                           const RemoteHead& head, const fs::path& destination, bool overwrite = false) {
+// Downloads, verifies and installs a remote snapshot. Returns the content digest of the installed
+// archive on success.
+std::optional<std::string> RestoreRemoteSnapshot(httplib::Client& client,
+                                                 const Configuration& configuration,
+                                                 std::string_view scope_id, const RemoteHead& head,
+                                                 const fs::path& destination,
+                                                 bool overwrite = false) {
     if (!IsIdentifier(head.id, 128) || !IsLowerHex(head.blob_id, HashSize * 2)) {
-        return false;
+        return std::nullopt;
     }
-    httplib::Client client(configuration.endpoint);
-    ConfigureClient(client);
-    const auto response =
-        client.Get(fmt::format("/v1/blobs/{}", head.blob_id), RequestHeaders(configuration));
-    if (!response || response->status != 200) {
-        LOG_WARNING(Core, "Save Sync could not download remote snapshot for scope {}", scope_id);
-        return false;
+    // Each stage releases its input before the next allocates, keeping at most two copies of the
+    // snapshot in memory.
+    std::optional<std::vector<u8>> compressed;
+    {
+        auto response =
+            client.Get(fmt::format("/v1/blobs/{}", head.blob_id), RequestHeaders(configuration));
+        RecordReachability(static_cast<bool>(response));
+        if (!response || response->status != 200) {
+            LOG_WARNING(Core, "Save Sync could not download remote snapshot for scope {}",
+                        scope_id);
+            return std::nullopt;
+        }
+        const std::span<const u8> encrypted{reinterpret_cast<const u8*>(response->body.data()),
+                                            response->body.size()};
+        const auto digest = Sha256(encrypted);
+        if (!digest || HexEncode(*digest) != head.blob_id) {
+            LOG_WARNING(Core, "Save Sync rejected a remote snapshot with an invalid hash");
+            return std::nullopt;
+        }
+        compressed = Decrypt(configuration, scope_id, encrypted);
     }
-    const std::span<const u8> encrypted{reinterpret_cast<const u8*>(response->body.data()),
-                                        response->body.size()};
-    const auto digest = Sha256(encrypted);
-    if (!digest || HexEncode(*digest) != head.blob_id) {
-        LOG_WARNING(Core, "Save Sync rejected a remote snapshot with an invalid hash");
-        return false;
-    }
-    const auto compressed = Decrypt(configuration, scope_id, encrypted);
     if (!compressed) {
         LOG_WARNING(Core, "Save Sync could not decrypt the remote snapshot");
-        return false;
+        return std::nullopt;
     }
-    const auto archive = DecompressArchive(*compressed);
+    auto archive = DecompressArchive(*compressed);
+    compressed.reset();
     if (!archive) {
         LOG_WARNING(Core, "Save Sync could not decompress the remote snapshot");
-        return false;
+        return std::nullopt;
     }
-    if (!RestoreArchive(*archive, destination, head.id, overwrite)) {
+    auto content = ContentDigest(configuration, *archive);
+    if (!content || !RestoreArchive(*archive, destination, head.id, overwrite)) {
         LOG_WARNING(Core,
                     "Save Sync could not install the remote snapshot without replacing local data");
-        return false;
+        return std::nullopt;
     }
     LOG_INFO(Core, "Save Sync restored snapshot {}", head.id);
-    return true;
+    return content;
 }
 
-UploadResult UploadSnapshot(const Configuration& configuration, const PendingSnapshot& snapshot) {
-    const auto blob = ReadBinaryFile(snapshot.blob_path);
-    if (!blob) {
-        LOG_ERROR(Core, "Save Sync pending blob {} is unavailable", snapshot.blob_path.string());
-        return UploadResult::Conflict;
-    }
-
-    httplib::Client client(configuration.endpoint);
-    ConfigureClient(client, true);
-
+UploadResult UploadSnapshot(httplib::Client& client, const Configuration& configuration,
+                            const PendingSnapshot& snapshot) {
     const auto headers = RequestHeaders(configuration);
-    const auto upload = client.Put(fmt::format("/v1/blobs/{}", snapshot.blob_id), headers, *blob,
-                                   "application/octet-stream");
-    if (!upload || (upload->status != 201 && upload->status != 204)) {
-        LOG_WARNING(Core, "Save Sync could not upload snapshot blob {}", snapshot.blob_id);
-        return UploadResult::Retry;
+    {
+        const auto blob = ReadBinaryFile(snapshot.blob_path);
+        if (!blob) {
+            LOG_ERROR(Core, "Save Sync pending blob {} is unavailable",
+                      snapshot.blob_path.string());
+            return UploadResult::Conflict;
+        }
+        const auto upload = client.Put(fmt::format("/v1/blobs/{}", snapshot.blob_id), headers,
+                                       *blob, "application/octet-stream");
+        RecordReachability(static_cast<bool>(upload));
+        if (!upload || (upload->status != 201 && upload->status != 204)) {
+            LOG_WARNING(Core, "Save Sync could not upload snapshot blob {}", snapshot.blob_id);
+            return UploadResult::Retry;
+        }
     }
 
     const json metadata = {
@@ -1172,6 +1261,14 @@ struct Manager::Impl {
             type == FileSys::SaveDataType::Account
                 ? fmt::format("account/{:016X}{:016X}/{:016X}", user_id[1], user_id[0], program_id)
                 : fmt::format("device/{:016X}", program_id);
+        // Games open their saves repeatedly on the emulation thread; everything below only needs
+        // to happen the first time a scope is seen.
+        {
+            std::scoped_lock lock{scopes_mutex};
+            if (scopes.contains(local_key)) {
+                return;
+            }
+        }
         const auto root = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir);
         const auto directory = Common::FS::ConcatPathSafe(root, relative_path);
         if (directory == root) {
@@ -1189,24 +1286,23 @@ struct Manager::Impl {
         }
 
         const auto scope_id = HexEncode(*scope_digest);
-        PublishMetadata(*configuration, scope_id, program_id);
-        {
-            std::scoped_lock lock{scopes_mutex};
-            if (scopes.contains(local_key)) {
-                return;
-            }
-        }
+        QueueMetadata(scope_id, program_id);
 
         std::string parent_snapshot_id = KnownHead(scope_id);
         const auto local_directory_is_empty = IsDirectoryEmpty(directory);
-        httplib::Client client(configuration->endpoint);
-        ConfigureClient(client);
-        if (const auto remote_head = GetRemoteHead(client, *configuration, scope_id); remote_head) {
-            if (local_directory_is_empty && *local_directory_is_empty && !remote_head->id.empty() &&
-                RestoreRemoteSnapshot(*configuration, scope_id, *remote_head, directory)) {
-                parent_snapshot_id = remote_head->id;
-                if (!SetKnownHead(scope_id, remote_head->id)) {
-                    LOG_WARNING(Core, "Save Sync could not persist the restored snapshot head");
+        // Only an empty local save can be restored automatically, so there is nothing to wait for
+        // otherwise. When the server was just unreachable, do not stall the game on a timeout.
+        if (local_directory_is_empty && *local_directory_is_empty && !ServerRecentlyUnreachable()) {
+            const auto client = MakeClient(*configuration);
+            if (const auto remote_head = GetRemoteHead(*client, *configuration, scope_id);
+                remote_head && !remote_head->id.empty()) {
+                if (const auto content = RestoreRemoteSnapshot(*client, *configuration, scope_id,
+                                                               *remote_head, directory)) {
+                    parent_snapshot_id = remote_head->id;
+                    if (!SetKnownHead(scope_id, remote_head->id)) {
+                        LOG_WARNING(Core, "Save Sync could not persist the restored snapshot head");
+                    }
+                    SetKnownContent(scope_id, *content);
                 }
             }
         }
@@ -1249,7 +1345,8 @@ struct Manager::Impl {
 
     bool Upload() {
         ScanExistingSaves(true);
-        return ProcessPending();
+        const bool metadata_retry = PublishQueuedMetadata();
+        return ProcessPending() || metadata_retry;
     }
 
     bool Download() {
@@ -1264,17 +1361,20 @@ struct Manager::Impl {
             known_scopes = scopes;
         }
         bool succeeded = !known_scopes.empty();
-        httplib::Client client(configuration->endpoint);
-        ConfigureClient(client);
+        const auto client = MakeClient(*configuration);
         for (const auto& [_, scope] : known_scopes) {
-            const auto remote_head = GetRemoteHead(client, *configuration, scope.scope_id);
-            if (!remote_head || remote_head->id.empty() ||
-                !RestoreRemoteSnapshot(*configuration, scope.scope_id, *remote_head,
-                                       scope.directory, true) ||
-                !SetKnownHead(scope.scope_id, remote_head->id)) {
+            const auto remote_head = GetRemoteHead(*client, *configuration, scope.scope_id);
+            if (!remote_head || remote_head->id.empty()) {
                 succeeded = false;
                 continue;
             }
+            const auto content = RestoreRemoteSnapshot(*client, *configuration, scope.scope_id,
+                                                       *remote_head, scope.directory, true);
+            if (!content || !SetKnownHead(scope.scope_id, remote_head->id)) {
+                succeeded = false;
+                continue;
+            }
+            SetKnownContent(scope.scope_id, *content);
             LOG_INFO(Core, "Save Sync downloaded latest cloud snapshot {}", remote_head->id);
         }
         return succeeded;
@@ -1284,40 +1384,87 @@ struct Manager::Impl {
         if (program_id == 0 || title.empty()) {
             return;
         }
-        std::scoped_lock lock{metadata_mutex};
-        metadata.insert_or_assign(program_id,
-                                  GameMetadata{.title = std::move(title), .icon = std::move(icon)});
+        bool waiting{};
+        {
+            std::scoped_lock lock{metadata_mutex};
+            metadata.insert_or_assign(
+                program_id, GameMetadata{.title = std::move(title), .icon = std::move(icon)});
+            waiting = std::any_of(metadata_queue.begin(), metadata_queue.end(),
+                                  [program_id](const auto& item) { return item.second == program_id; });
+        }
+        if (waiting) {
+            RequestWork();
+        }
     }
 
 private:
-    void PublishMetadata(const Configuration& configuration, std::string_view scope_id,
-                         u64 program_id) {
-        GameMetadata game_metadata;
+    void RequestWork() {
+        {
+            std::scoped_lock lock{worker_mutex};
+            upload_requested = true;
+        }
+        worker_cv.notify_one();
+    }
+
+    // Game titles and icons are published from the worker thread, once per scope per process, so
+    // opening a save never waits for a network round trip.
+    void QueueMetadata(const std::string& scope_id, u64 program_id) {
+        std::scoped_lock lock{metadata_mutex};
+        if (!published_metadata.contains(scope_id)) {
+            metadata_queue.insert_or_assign(scope_id, program_id);
+        }
+    }
+
+    // Returns true when a publish failed and should be retried.
+    bool PublishQueuedMetadata() {
+        std::scoped_lock publish_lock{publish_mutex};
+        std::vector<std::pair<std::string, GameMetadata>> ready;
         {
             std::scoped_lock lock{metadata_mutex};
-            const auto iterator = metadata.find(program_id);
-            if (iterator == metadata.end()) {
-                return;
+            for (const auto& [scope_id, program_id] : metadata_queue) {
+                if (const auto iterator = metadata.find(program_id); iterator != metadata.end()) {
+                    ready.emplace_back(scope_id, iterator->second);
+                }
             }
-            game_metadata = iterator->second;
         }
-        json payload{{"title", game_metadata.title}};
-        if (!game_metadata.icon.empty()) {
-            const auto encoded = Base64Encode(game_metadata.icon);
-            const auto mime = game_metadata.icon.size() >= 2 && game_metadata.icon[0] == 0xFF &&
-                                      game_metadata.icon[1] == 0xD8
-                                  ? "image/jpeg"
-                                  : "image/png";
-            payload["logo_data"] = fmt::format("data:{};base64,{}", mime, encoded);
+        if (ready.empty()) {
+            return false;
         }
-        httplib::Client client(configuration.endpoint);
-        ConfigureClient(client, true);
-        const auto response = client.Put(fmt::format("/v1/scopes/{}/metadata", scope_id),
-                                         RequestHeaders(configuration), payload.dump(),
-                                         "application/json");
-        if (!response || (response->status != 200 && response->status != 204)) {
-            LOG_WARNING(Core, "Save Sync could not publish metadata for scope {}", scope_id);
+        const auto configuration = ReadConfiguration();
+        if (!configuration) {
+            return false;
         }
+
+        const auto client = MakeClient(*configuration);
+        for (const auto& [scope_id, game_metadata] : ready) {
+            json payload{{"title", game_metadata.title}};
+            if (!game_metadata.icon.empty()) {
+                const auto encoded = Base64Encode(game_metadata.icon);
+                const auto mime = game_metadata.icon.size() >= 2 &&
+                                          game_metadata.icon[0] == 0xFF &&
+                                          game_metadata.icon[1] == 0xD8
+                                      ? "image/jpeg"
+                                      : "image/png";
+                payload["logo_data"] = fmt::format("data:{};base64,{}", mime, encoded);
+            }
+            const auto response =
+                client->Put(fmt::format("/v1/scopes/{}/metadata", scope_id),
+                            RequestHeaders(*configuration), payload.dump(), "application/json");
+            RecordReachability(static_cast<bool>(response));
+            if (!response) {
+                // The server is unreachable; leave the remaining entries for the next pass.
+                return true;
+            }
+            if (response->status != 200 && response->status != 204) {
+                // A rejected payload will not succeed on retry, so it is not resent every pass.
+                LOG_WARNING(Core, "Save Sync metadata for scope {} was rejected with HTTP {}",
+                            scope_id, response->status);
+            }
+            std::scoped_lock lock{metadata_mutex};
+            metadata_queue.erase(scope_id);
+            published_metadata.insert(scope_id);
+        }
+        return false;
     }
 
     static bool IsHexString(std::string_view value, std::size_t length) {
@@ -1440,7 +1587,7 @@ private:
 
     std::string KnownHead(std::string_view scope_id) {
         std::scoped_lock lock{known_heads_mutex};
-        const auto heads = ReadKnownHeads();
+        const auto heads = ReadScopeMap(KnownHeadsPath(), IsSnapshotIdentifier);
         if (const auto iterator = heads.find(std::string{scope_id}); iterator != heads.end()) {
             return iterator->second;
         }
@@ -1449,24 +1596,58 @@ private:
 
     bool SetKnownHead(std::string_view scope_id, std::string_view snapshot_id) {
         std::scoped_lock lock{known_heads_mutex};
-        auto heads = ReadKnownHeads();
+        auto heads = ReadScopeMap(KnownHeadsPath(), IsSnapshotIdentifier);
         heads.insert_or_assign(std::string{scope_id}, std::string{snapshot_id});
-        return WriteKnownHeads(heads);
+        return WriteScopeMap(KnownHeadsPath(), heads);
+    }
+
+    // Content digest of the save as last captured or restored, used to skip unchanged snapshots.
+    std::string KnownContent(std::string_view scope_id) {
+        std::scoped_lock lock{known_contents_mutex};
+        const auto contents = ReadScopeMap(KnownContentsPath(), IsContentDigest);
+        if (const auto iterator = contents.find(std::string{scope_id}); iterator != contents.end()) {
+            return iterator->second;
+        }
+        return {};
+    }
+
+    void SetKnownContent(std::string_view scope_id, std::string_view digest) {
+        std::scoped_lock lock{known_contents_mutex};
+        auto contents = ReadScopeMap(KnownContentsPath(), IsContentDigest);
+        contents.insert_or_assign(std::string{scope_id}, std::string{digest});
+        if (!WriteScopeMap(KnownContentsPath(), contents)) {
+            // Only costs a redundant snapshot next time.
+            LOG_WARNING(Core, "Save Sync could not persist the snapshot content cache");
+        }
     }
 
     void Capture(const Configuration& configuration, const TrackedScope& scope) {
-        const auto archive = BuildArchive(scope.directory);
-        if (!archive) {
-            LOG_WARNING(Core, "Save Sync could not snapshot {}", scope.directory.string());
-            return;
-        }
-        const auto compressed =
-            Common::Compression::CompressDataZSTDDefault(archive->data(), archive->size());
-        if (compressed.empty() && !archive->empty()) {
-            LOG_WARNING(Core, "Save Sync could not compress {}", scope.directory.string());
-            return;
+        // Each stage releases its input before the next allocates, keeping at most two copies of
+        // the save in memory.
+        std::vector<u8> compressed;
+        std::string content;
+        {
+            const auto archive = BuildArchive(scope.directory);
+            if (!archive) {
+                LOG_WARNING(Core, "Save Sync could not snapshot {}", scope.directory.string());
+                return;
+            }
+            content = ContentDigest(configuration, *archive).value_or(std::string{});
+            if (!content.empty() && content == KnownContent(scope.scope_id)) {
+                // Every save the game touched (or that a scan found) is captured at shutdown;
+                // unchanged ones would otherwise produce an identical upload every session.
+                LOG_DEBUG(Core, "Save Sync skipped unchanged save {}", scope.directory.string());
+                return;
+            }
+            compressed =
+                Common::Compression::CompressDataZSTDDefault(archive->data(), archive->size());
+            if (compressed.empty() && !archive->empty()) {
+                LOG_WARNING(Core, "Save Sync could not compress {}", scope.directory.string());
+                return;
+            }
         }
         const auto encrypted = Encrypt(configuration, scope.scope_id, compressed);
+        compressed = {};
         const auto blob_digest = encrypted ? Sha256(*encrypted) : std::nullopt;
         const auto snapshot_id = RandomIdentifier();
         if (!encrypted || !blob_digest || !snapshot_id) {
@@ -1501,6 +1682,9 @@ private:
             LOG_ERROR(Core, "Save Sync could not persist a local snapshot");
             return;
         }
+        if (!content.empty()) {
+            SetKnownContent(scope.scope_id, content);
+        }
         LOG_INFO(Core, "Save Sync created local snapshot {}", snapshot.snapshot_id);
     }
 
@@ -1513,7 +1697,8 @@ private:
             }
             upload_requested = false;
             lock.unlock();
-            const bool retry = ProcessPending();
+            const bool metadata_retry = PublishQueuedMetadata();
+            const bool retry = ProcessPending() || metadata_retry;
             lock.lock();
             if (retry && !stopping) {
                 worker_cv.wait_for(lock, std::chrono::seconds(30),
@@ -1556,6 +1741,10 @@ private:
                              std::tie(right.created_at, right.snapshot_id);
                   });
 
+        if (snapshots.empty()) {
+            return false;
+        }
+        const auto client = MakeClient(*configuration);
         bool retry_required{};
         while (!snapshots.empty()) {
             std::set<std::string> pending_ids;
@@ -1580,7 +1769,7 @@ private:
             for (auto iterator = ready.rbegin(); iterator != ready.rend(); ++iterator) {
                 const auto index = *iterator;
                 const auto& snapshot = snapshots[index];
-                const auto result = UploadSnapshot(*configuration, snapshot);
+                const auto result = UploadSnapshot(*client, *configuration, snapshot);
                 if (result == UploadResult::Retry) {
                     retry_required = true;
                     continue;
@@ -1635,6 +1824,9 @@ private:
 
     std::mutex metadata_mutex;
     std::map<u64, GameMetadata> metadata;
+    std::map<std::string, u64> metadata_queue;
+    std::set<std::string> published_metadata;
+    std::mutex publish_mutex;
 
     std::mutex worker_mutex;
     std::condition_variable worker_cv;
@@ -1644,6 +1836,7 @@ private:
     std::mutex upload_mutex;
     std::mutex pending_mutex;
     std::mutex known_heads_mutex;
+    std::mutex known_contents_mutex;
 };
 
 Manager::Manager() : impl{std::make_unique<Impl>()} {}
