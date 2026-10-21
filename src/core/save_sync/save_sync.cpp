@@ -1343,6 +1343,15 @@ struct Manager::Impl {
         worker_cv.notify_one();
     }
 
+    void RequestBackgroundSync() {
+        {
+            std::scoped_lock lock{worker_mutex};
+            scan_requested = true;
+            upload_requested = true;
+        }
+        worker_cv.notify_one();
+    }
+
     bool Upload() {
         ScanExistingSaves(true);
         const bool metadata_retry = PublishQueuedMetadata();
@@ -1696,7 +1705,11 @@ private:
                 return;
             }
             upload_requested = false;
+            const bool scan = std::exchange(scan_requested, false);
             lock.unlock();
+            if (scan) {
+                ScanExistingSaves(true);
+            }
             const bool metadata_retry = PublishQueuedMetadata();
             const bool retry = ProcessPending() || metadata_retry;
             lock.lock();
@@ -1832,6 +1845,7 @@ private:
     std::condition_variable worker_cv;
     bool stopping{};
     bool upload_requested{};
+    bool scan_requested{};
     std::thread worker;
     std::mutex upload_mutex;
     std::mutex pending_mutex;
@@ -1854,6 +1868,10 @@ void Manager::SetGameMetadata(u64 program_id, std::string title, std::vector<u8>
 
 void Manager::CompleteSession() {
     impl->Complete();
+}
+
+void Manager::RequestBackgroundSync() {
+    impl->RequestBackgroundSync();
 }
 
 bool Manager::UploadPending() {

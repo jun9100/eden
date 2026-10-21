@@ -24,6 +24,8 @@ public:
                        u128 user_id, std::string relative_path);
     void SetGameMetadata(u64 program_id, std::string title, std::vector<u8> icon);
     void CompleteSession();
+    /// Scans existing saves and uploads pending snapshots on the manager's worker thread.
+    void RequestBackgroundSync();
     [[nodiscard]] bool UploadPending();
     [[nodiscard]] bool DownloadLatest();
 

@@ -345,11 +345,21 @@ struct System::Impl {
         }
 
         std::string name = "Unknown program";
-        if (app_loader->ReadTitle(name) != Loader::ResultStatus::Success) {
+        const bool has_title = app_loader->ReadTitle(name) == Loader::ResultStatus::Success;
+        if (!has_title) {
             LOG_ERROR(Core, "Failed to read title for ROM!");
         }
 
         LOG_INFO(Core, "Loading {} ({:016X}) ...", name, params.program_id);
+
+        // Lets save sync label this game's saves with its title and icon on every frontend.
+        if (has_title && params.program_id != 0) {
+            std::vector<u8> icon;
+            if (app_loader->ReadIcon(icon) != Loader::ResultStatus::Success) {
+                icon.clear();
+            }
+            save_sync_manager.SetGameMetadata(params.program_id, name, std::move(icon));
+        }
 
         // Expose program id to dump sites and other global readers.
         Settings::SetCurrentProgramID(params.program_id);

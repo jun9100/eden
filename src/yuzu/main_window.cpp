@@ -139,6 +139,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "core/frontend/applets/software_keyboard.h"
 
 #include "core/hle/kernel/k_process.h"
+#include "core/save_sync/save_sync.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/am/frontend/applet_web_browser_types.h"
@@ -459,6 +460,10 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         Core::Crypto::KeyManager::Instance().ReloadKeys();
     }
     game_list->PopulateAsync(UISettings::values.game_dirs);
+
+    // Upload snapshots queued by an earlier session and back up existing saves without waiting
+    // for a game to be launched. Runs on the save sync worker thread.
+    QtCommon::system->GetSaveSyncManager().RequestBackgroundSync();
 
     // Set up game list mode checkboxes.
     SetGameListMode(UISettings::values.game_list_mode.GetValue());
