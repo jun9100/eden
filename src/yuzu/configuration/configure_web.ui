@@ -213,6 +213,16 @@
           </item>
          </layout>
         </item>
+        <item row="5" column="1">
+         <widget class="QPushButton" name="button_download_save_sync">
+          <property name="toolTip">
+           <string>Back up the local save before replacing it with the latest cloud snapshot.</string>
+          </property>
+          <property name="text">
+           <string>Download latest cloud saves</string>
+          </property>
+         </widget>
+        </item>
        </layout>
       </widget>
      </item>

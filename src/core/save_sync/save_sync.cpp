@@ -46,6 +46,7 @@
 #include "common/fs/path_util.h"
 #include "common/httplib.h"
 #include "common/logging.h"
+#include "common/scm_rev.h"
 #include "common/settings.h"
 #include "common/zstd_compression.h"
 
@@ -76,6 +77,13 @@ struct Configuration {
     std::string endpoint;
     std::string token;
     std::array<u8, EncryptionKeySize> encryption_key;
+};
+
+struct DeviceIdentity {
+    std::string id;
+    std::string name;
+    std::string platform;
+    std::string version;
 };
 
 struct TrackedScope {
@@ -641,9 +649,9 @@ std::optional<bool> IsDirectoryEmpty(const fs::path& directory) {
 }
 
 bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
-                    std::string_view snapshot_id) {
+                    std::string_view snapshot_id, bool overwrite) {
     const auto empty = IsDirectoryEmpty(destination);
-    if (!empty || !*empty) {
+    if (!empty || (!*empty && !overwrite)) {
         return false;
     }
 
@@ -663,7 +671,10 @@ bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
         return false;
     }
     if (destination_exists) {
-        fs::remove(destination, error);
+        const fs::path backup = parent / fmt::format(".eden-save-sync-backup-{}", snapshot_id);
+        fs::remove_all(backup, error);
+        error.clear();
+        fs::rename(destination, backup, error);
         if (error) {
             fs::remove_all(staging, error);
             return false;
@@ -671,6 +682,11 @@ bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
     }
     fs::rename(staging, destination, error);
     if (error) {
+        if (destination_exists) {
+            std::error_code restore_error;
+            fs::rename(parent / fmt::format(".eden-save-sync-backup-{}", snapshot_id),
+                       destination, restore_error);
+        }
         fs::remove_all(staging, error);
         return false;
     }
@@ -886,10 +902,88 @@ std::optional<std::string> ReadBinaryFile(const fs::path& path) {
     return contents;
 }
 
+fs::path DeviceIdentityPath() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" /
+           "device.json";
+}
+
+std::string DevicePlatform() {
+#ifdef _WIN32
+    return "Windows";
+#elif defined(__ANDROID__)
+    return "Android";
+#elif defined(__APPLE__)
+    return "macOS";
+#elif defined(__linux__)
+    return "Linux";
+#else
+    return "Unknown";
+#endif
+}
+
+DeviceIdentity CurrentDeviceIdentity() {
+    const auto path = DeviceIdentityPath();
+    std::ifstream input(path);
+    if (input) {
+        try {
+            const json value = json::parse(input);
+            const auto id = value.value("id", std::string{});
+            if (IsIdentifier(id, 128)) {
+                return DeviceIdentity{
+                    .id = id,
+                    .name = value.value("name", std::string{}),
+                    .platform = value.value("platform", DevicePlatform()),
+                    .version = value.value("version", std::string{Common::g_build_version}),
+                };
+            }
+        } catch (const json::exception&) {
+        }
+    }
+
+    const auto id = RandomIdentifier().value_or("local-device");
+    const char* host = std::getenv("COMPUTERNAME");
+    if (host == nullptr || *host == '\0') {
+        host = std::getenv("HOSTNAME");
+    }
+    const std::string name = host != nullptr && *host != '\0' ? host : "Eden device";
+    const DeviceIdentity identity{
+        .id = id,
+        .name = name,
+        .platform = DevicePlatform(),
+        .version = std::string{Common::g_build_version},
+    };
+    std::error_code error;
+    fs::create_directories(path.parent_path(), error);
+    if (!error) {
+        const auto temporary = path.string() + ".tmp";
+        std::ofstream output(temporary, std::ios::trunc);
+        if (output) {
+            output << json{{"id", identity.id},
+                           {"name", identity.name},
+                           {"platform", identity.platform},
+                           {"version", identity.version}}
+                              .dump();
+            output.close();
+            if (output) {
+                fs::rename(temporary, path, error);
+                if (error) {
+                    fs::remove(temporary, error);
+                }
+            }
+        }
+    }
+    return identity;
+}
+
 httplib::Headers RequestHeaders(const Configuration& configuration) {
+    const auto device = CurrentDeviceIdentity();
     return {
         {"Authorization", "Bearer " + configuration.token},
         {"User-Agent", "Eden-SaveSync/1"},
+        {"X-Eden-Device-ID", device.id},
+        {"X-Eden-Device-Name", device.name},
+        {"X-Eden-Platform", device.platform},
+        {"X-Eden-Version", device.version},
     };
 }
 
@@ -937,7 +1031,7 @@ std::optional<RemoteHead> GetRemoteHead(httplib::Client& client, const Configura
 }
 
 bool RestoreRemoteSnapshot(const Configuration& configuration, std::string_view scope_id,
-                           const RemoteHead& head, const fs::path& destination) {
+                           const RemoteHead& head, const fs::path& destination, bool overwrite = false) {
     if (!IsIdentifier(head.id, 128) || !IsLowerHex(head.blob_id, HashSize * 2)) {
         return false;
     }
@@ -966,7 +1060,7 @@ bool RestoreRemoteSnapshot(const Configuration& configuration, std::string_view 
         LOG_WARNING(Core, "Save Sync could not decompress the remote snapshot");
         return false;
     }
-    if (!RestoreArchive(*archive, destination, head.id)) {
+    if (!RestoreArchive(*archive, destination, head.id, overwrite)) {
         LOG_WARNING(Core,
                     "Save Sync could not install the remote snapshot without replacing local data");
         return false;
@@ -1154,8 +1248,36 @@ struct Manager::Impl {
     }
 
     bool Upload() {
-        ScanExistingSaves();
+        ScanExistingSaves(true);
         return ProcessPending();
+    }
+
+    bool Download() {
+        const auto configuration = ReadConfiguration();
+        if (!configuration) {
+            return false;
+        }
+        ScanExistingSaves(false);
+        std::map<std::string, TrackedScope> known_scopes;
+        {
+            std::scoped_lock lock{scopes_mutex};
+            known_scopes = scopes;
+        }
+        bool succeeded = !known_scopes.empty();
+        httplib::Client client(configuration->endpoint);
+        ConfigureClient(client);
+        for (const auto& [_, scope] : known_scopes) {
+            const auto remote_head = GetRemoteHead(client, *configuration, scope.scope_id);
+            if (!remote_head || remote_head->id.empty() ||
+                !RestoreRemoteSnapshot(*configuration, scope.scope_id, *remote_head,
+                                       scope.directory, true) ||
+                !SetKnownHead(scope.scope_id, remote_head->id)) {
+                succeeded = false;
+                continue;
+            }
+            LOG_INFO(Core, "Save Sync downloaded latest cloud snapshot {}", remote_head->id);
+        }
+        return succeeded;
     }
 
     void SetGameMetadata(u64 program_id, std::string title, std::vector<u8> icon) {
@@ -1227,7 +1349,7 @@ private:
         return result;
     }
 
-    void ScanExistingSaves() {
+    void ScanExistingSaves(bool capture_initial) {
         const auto configuration = ReadConfiguration();
         if (!configuration) {
             return;
@@ -1292,7 +1414,7 @@ private:
         }
 
         std::vector<TrackedScope> initial_scopes;
-        {
+        if (capture_initial) {
             std::scoped_lock lock{scopes_mutex};
             for (const auto& [local_key, scope] : scopes) {
                 if (!known_local_keys.contains(local_key) && scope.parent_snapshot_id.empty() &&
@@ -1309,7 +1431,7 @@ private:
         for (const auto& scope : initial_scopes) {
             Capture(*configuration, scope);
         }
-        if (!initial_scopes.empty()) {
+        if (capture_initial && !initial_scopes.empty()) {
             std::scoped_lock lock{worker_mutex};
             upload_requested = true;
             worker_cv.notify_one();
@@ -1543,6 +1665,10 @@ void Manager::CompleteSession() {
 
 bool Manager::UploadPending() {
     return impl->Upload();
+}
+
+bool Manager::DownloadLatest() {
+    return impl->Download();
 }
 
 } // namespace Core::SaveSync

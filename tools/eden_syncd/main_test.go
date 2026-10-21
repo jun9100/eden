@@ -486,3 +486,41 @@ func TestDashboardServesPublishedLogoWithoutEmbeddingBase64(t *testing.T) {
 			response.Header.Get("Content-Type"), body)
 	}
 }
+
+func TestDashboardShowsConnectedDevices(t *testing.T) {
+	s, err := newServer(t.TempDir(), testToken, 1024*1024, "dashboard-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(s.handler())
+	defer httpServer.Close()
+
+	request := authorizedRequest(t, http.MethodPost, httpServer.URL+"/v1/devices/heartbeat", nil)
+	request.Header.Set("X-Eden-Device-ID", "device-1")
+	request.Header.Set("X-Eden-Device-Name", "Windows Desktop")
+	request.Header.Set("X-Eden-Platform", "Windows")
+	request.Header.Set("X-Eden-Version", "v2026.10.21-2")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("heartbeat status = %d", response.StatusCode)
+	}
+
+	response, err = http.DefaultClient.Do(adminRequest(t, http.MethodGet,
+		httpServer.URL+"/admin/", nil, "dashboard-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("Windows Desktop")) ||
+		!bytes.Contains(body, []byte("在线设备")) {
+		t.Fatalf("device missing from dashboard: %q", body)
+	}
+}

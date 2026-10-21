@@ -35,6 +35,20 @@ merges scopes or deletes snapshots automatically, because separate scopes may
 belong to different games, accounts, or devices. Keep the dashboard on the
 private LAN; do not publish it on the Internet.
 
+Clients identify themselves with a local persistent device ID. The dashboard
+lists the device name, platform, Eden version, and last activity; a device is
+shown as online while it has contacted the service within the last 90 seconds.
+The device ID is not a credential and is stored only in the client's local
+save-sync cache.
+
+Normal automatic sync is conflict-safe: a local save never silently replaces a
+newer cloud head, and a conflict is retained locally for review. The desktop
+Settings > Web Service > Save Sync page also provides **Download latest cloud
+saves**. That explicit operation treats the cloud head as authoritative,
+moves each existing local save directory to a `.eden-save-sync-backup-*`
+directory beside it, then installs the cloud snapshot. Close all games before
+using it.
+
 ## Run on a NAS
 
 Create a `.env` file next to `compose.yaml` containing `EDEN_SYNCD_TOKEN` and, when the dashboard

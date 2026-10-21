@@ -17,6 +17,7 @@
 
 #include <QtConcurrentRun>
 #include "common/settings.h"
+#include "core/save_sync/save_sync.h"
 #include "qt_common/config/uisettings.h"
 #include "ui_configure_web.h"
 
@@ -54,6 +55,8 @@ ConfigureWeb::ConfigureWeb(QWidget* parent)
     connect(ui->button_generate, &QPushButton::clicked, this, &ConfigureWeb::GenerateToken);
     connect(ui->button_generate_save_sync_key, &QPushButton::clicked, this,
             &ConfigureWeb::GenerateSaveSyncKey);
+    connect(ui->button_download_save_sync, &QPushButton::clicked, this,
+            &ConfigureWeb::DownloadSaveSync);
 
 #ifndef USE_DISCORD_PRESENCE
     ui->discord_group->setVisible(false);
@@ -130,6 +133,18 @@ void ConfigureWeb::ApplyConfiguration() {
     Settings::values.save_sync_url = ui->edit_save_sync_url->text().toStdString();
     Settings::values.save_sync_token = ui->edit_save_sync_token->text().toStdString();
     Settings::values.save_sync_key = ui->edit_save_sync_key->text().toStdString();
+}
+
+void ConfigureWeb::DownloadSaveSync() {
+    ApplyConfiguration();
+    QMessageBox::information(
+        this, tr("Save Sync"),
+        tr("The latest cloud snapshots will be downloaded in the background. Close all games "
+           "before starting this operation. Existing local saves are backed up first."));
+    (void)QtConcurrent::run([] {
+        Core::SaveSync::Manager manager;
+        (void)manager.DownloadLatest();
+    });
 }
 
 void ConfigureWeb::VerifyLogin() {

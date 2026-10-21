@@ -25,6 +25,7 @@ public:
     void SetGameMetadata(u64 program_id, std::string title, std::vector<u8> icon);
     void CompleteSession();
     [[nodiscard]] bool UploadPending();
+    [[nodiscard]] bool DownloadLatest();
 
 private:
     struct Impl;

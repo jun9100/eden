@@ -52,8 +52,17 @@ type scopeMetadata struct {
 	LogoData string `json:"logo_data,omitempty"`
 }
 
+type deviceInfo struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name,omitempty"`
+	Platform string    `json:"platform,omitempty"`
+	Version  string    `json:"version,omitempty"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
 type dashboardState struct {
-	Scopes map[string]scopeMetadata `json:"scopes"`
+	Scopes  map[string]scopeMetadata `json:"scopes"`
+	Devices map[string]deviceInfo    `json:"devices,omitempty"`
 }
 
 type server struct {
@@ -89,7 +98,10 @@ func newServer(dataDir, token string, maxObjectBytes int64, adminTokens ...strin
 		adminToken:     adminToken,
 		maxObjectBytes: maxObjectBytes,
 		state:          serverState{Scopes: make(map[string]scope)},
-		dashboard:      dashboardState{Scopes: make(map[string]scopeMetadata)},
+		dashboard: dashboardState{
+			Scopes:  make(map[string]scopeMetadata),
+			Devices: make(map[string]deviceInfo),
+		},
 	}
 	if err := s.loadState(); err != nil {
 		return nil, err
@@ -108,6 +120,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/scopes/{id}/head", s.requireToken(s.handleGetHead))
 	mux.HandleFunc("PUT /v1/scopes/{id}/snapshots/{snapshot}", s.requireToken(s.handlePutSnapshot))
 	mux.HandleFunc("PUT /v1/scopes/{id}/metadata", s.requireToken(s.handlePutScopeMetadata))
+	mux.HandleFunc("POST /v1/devices/heartbeat", s.requireToken(s.handleDeviceHeartbeat))
 	mux.HandleFunc("GET /admin/", s.requireAdmin(s.handleDashboard))
 	mux.HandleFunc("GET /admin/scopes/{id}/logo", s.requireAdmin(s.handleScopeLogo))
 	mux.HandleFunc("POST /admin/scopes/{id}", s.requireAdmin(s.handleUpdateScopeMetadata))
@@ -123,8 +136,54 @@ func (s *server) requireToken(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
+		s.recordDevice(r)
 		next(w, r)
 	}
+}
+
+func (s *server) recordDevice(r *http.Request) {
+	deviceID := strings.TrimSpace(r.Header.Get("X-Eden-Device-ID"))
+	if !validIdentifier(deviceID, 128) {
+		return
+	}
+	device := deviceInfo{
+		ID:       deviceID,
+		Name:     trimDeviceField(r.Header.Get("X-Eden-Device-Name"), 80),
+		Platform: trimDeviceField(r.Header.Get("X-Eden-Platform"), 32),
+		Version:  trimDeviceField(r.Header.Get("X-Eden-Version"), 64),
+		LastSeen: time.Now().UTC(),
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if previous, ok := s.dashboard.Devices[deviceID]; ok &&
+		device.Name == previous.Name && device.Platform == previous.Platform &&
+		device.Version == previous.Version && device.LastSeen.Sub(previous.LastSeen) < 30*time.Second {
+		return
+	}
+	next := dashboardState{
+		Scopes:  make(map[string]scopeMetadata, len(s.dashboard.Scopes)),
+		Devices: make(map[string]deviceInfo, len(s.dashboard.Devices)+1),
+	}
+	for id, metadata := range s.dashboard.Scopes {
+		next.Scopes[id] = metadata
+	}
+	for id, known := range s.dashboard.Devices {
+		next.Devices[id] = known
+	}
+	next.Devices[deviceID] = device
+	if err := s.persistDashboard(next); err != nil {
+		log.Printf("record device %s: %v", deviceID, err)
+		return
+	}
+	s.dashboard = next
+}
+
+func trimDeviceField(value string, maximum int) string {
+	value = strings.TrimSpace(value)
+	if len([]rune(value)) > maximum {
+		return string([]rune(value)[:maximum])
+	}
+	return value
 }
 
 func (s *server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -146,6 +205,10 @@ func (s *server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
+}
+
+func (s *server) handleDeviceHeartbeat(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) handlePutBlob(w http.ResponseWriter, r *http.Request) {
@@ -345,27 +408,56 @@ type dashboardScope struct {
 	Snapshots     []dashboardSnapshot
 }
 
+type dashboardDevice struct {
+	ID       string
+	Name     string
+	Platform string
+	Version  string
+	LastSeen time.Time
+	Online   bool
+}
+
 type dashboardView struct {
 	ScopeCount          int
 	SnapshotCount       int
 	ObjectCount         int
 	DuplicateObjectRefs int
 	TotalBytes          int64
+	DeviceCount         int
+	OnlineDeviceCount   int
+	Devices             []dashboardDevice
 	Scopes              []dashboardScope
 }
 
 var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{
 	"formatBytes": formatBytes,
+	"deviceTime":  func(value time.Time) string { return value.Local().Format("2006-01-02 15:04:05") },
 }).Parse(`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Eden 存档同步</title><style>
 :root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#1c2732;background:#eef3f5}
-*{box-sizing:border-box}body{margin:0}.top{background:#133d52;color:#fff;padding:22px max(24px,calc((100vw - 1180px)/2));display:flex;justify-content:space-between;align-items:flex-start;gap:24px}.top h1{margin:0;font-size:25px}.top p{margin:4px 0 0;color:#bed6df;font-size:14px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(72px,auto));gap:20px}.metric{font-size:12px;color:#bed6df;white-space:nowrap}.metric strong{display:block;color:#fff;font-size:20px}.content{max-width:1180px;margin:0 auto;padding:26px 24px 50px}.empty{padding:36px 0;color:#5b6871}.scope{background:#fff;border:1px solid #d8e0e4;border-radius:8px;margin:0 0 16px;overflow:hidden}.scope-head{display:flex;gap:14px;align-items:center;padding:16px 18px;border-bottom:1px solid #e5ebed}.logo,.logo-placeholder{width:48px;height:48px;border-radius:6px;background:#dde7eb;object-fit:cover;flex:none}.logo-placeholder{display:grid;place-items:center;color:#78909c;font-size:18px}.scope-title{min-width:0;flex:1}.scope-title h2{font-size:17px;margin:0 0 5px;overflow-wrap:anywhere}.scope-id{font-size:12px;color:#51616c;overflow-wrap:anywhere}.status{display:inline-block;margin-left:8px;border-radius:999px;padding:2px 7px;font-size:11px;font-weight:600;vertical-align:2px}.matched{background:#d9f0e2;color:#21643a}.unmatched{background:#fff0cc;color:#805a00}.head{font-size:12px;color:#51616c;text-align:right;white-space:nowrap}.head code{display:block;max-width:220px;overflow-wrap:anywhere;color:#173e50}.scope-body{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:0}.history{padding:14px 18px}.history h3,.edit h3{font-size:13px;margin:0 0 10px;color:#40515c}.history-summary{font-size:12px;color:#65747d;margin:-3px 0 8px}.snapshot{display:grid;grid-template-columns:1fr auto;gap:5px;padding:9px 0;border-top:1px solid #edf1f2;font-size:13px}.snapshot:first-of-type{border-top:0}.snapshot code{overflow-wrap:anywhere;color:#1c485e}.snapshot small{color:#65747d}.edit{background:#f6f9fa;border-left:1px solid #e3eaed;padding:14px 18px}.edit label{display:block;font-size:12px;margin:10px 0 4px;color:#40515c}.edit input{width:100%;border:1px solid #b9c8cf;border-radius:4px;padding:8px;background:#fff;color:#192630}.edit button{margin-top:13px;border:0;border-radius:4px;background:#006b80;color:#fff;padding:9px 14px;font-weight:600;cursor:pointer}@media (prefers-color-scheme:dark){:root{color:#e6edf0;background:#10191e}.scope{background:#172329;border-color:#34444d}.scope-head{border-color:#34444d}.edit{background:#132027;border-color:#34444d}.edit input{background:#0e171c;color:#e6edf0;border-color:#53666f}.snapshot{border-color:#2b3a42}.scope-title code,.head,.snapshot small,.history-summary{color:#aebfc7}.matched{background:#1b432a;color:#b9ebc8}.unmatched{background:#4b3b12;color:#f7d676}}@media(max-width:840px){.top{display:block}.metrics{margin-top:18px}}@media(max-width:720px){.metrics{grid-template-columns:repeat(2,1fr)}.scope-body{grid-template-columns:1fr}.edit{border-left:0;border-top:1px solid #e3eaed}.head{display:none}}
-</style></head><body><header class="top"><div><h1>Eden 存档同步</h1><p>按存档范围查看快照与同步状态</p></div><div class="metrics"><span class="metric"><strong>{{.ScopeCount}}</strong>存档范围</span><span class="metric"><strong>{{.SnapshotCount}}</strong>快照</span><span class="metric"><strong>{{.ObjectCount}}</strong>唯一对象</span><span class="metric"><strong>{{.DuplicateObjectRefs}}</strong>重复引用</span></div></header><main class="content">{{if .Scopes}}{{range .Scopes}}<section class="scope"><div class="scope-head">{{if .LogoURL}}<img class="logo" src="{{.LogoURL}}" alt="{{.Title}}">{{else}}<div class="logo-placeholder" aria-hidden="true">E</div>{{end}}<div class="scope-title"><h2>{{.Title}}{{if .Named}}<span class="status matched">已匹配</span>{{else}}<span class="status unmatched">待匹配</span>{{end}}</h2><code class="scope-id">范围 {{.ID}}</code></div><div class="head">当前版本<code>{{.Head}}</code></div></div><div class="scope-body"><div class="history"><h3>快照历史</h3><p class="history-summary">{{.SnapshotCount}} 个快照</p>{{range .Snapshots}}<div class="snapshot"><div><code>{{.ID}}</code><small>{{if .Parent}}父版本 {{.Parent}}{{else}}初始快照{{end}}</small></div><div><small>{{.CreatedAt.Local.Format "2006-01-02 15:04:05"}}<br>{{formatBytes .Bytes}}</small></div></div>{{end}}</div><form class="edit" method="post" action="/admin/scopes/{{.ID}}"><h3>显示设置</h3><label for="title-{{.ID}}">显示名称</label><input id="title-{{.ID}}" name="title" maxlength="80" value="{{.Title}}" placeholder="游戏或设备名称"><label for="logo-{{.ID}}">Logo 图片地址</label><input id="logo-{{.ID}}" name="logo_url" maxlength="2048" value="{{.EditLogoURL}}" placeholder="可选，填写图片地址"><button type="submit">保存</button></form></div></section>{{end}}{{else}}<p class="empty">尚未上传存档快照。</p>{{end}}</main></body></html>`))
+*{box-sizing:border-box}body{margin:0}.top{background:#133d52;color:#fff;padding:22px max(24px,calc((100vw - 1180px)/2));display:flex;justify-content:space-between;align-items:flex-start;gap:24px}.top h1{margin:0;font-size:25px}.top p{margin:4px 0 0;color:#bed6df;font-size:14px}.metrics{display:grid;grid-template-columns:repeat(5,minmax(72px,auto));gap:20px}.metric{font-size:12px;color:#bed6df;white-space:nowrap}.metric strong{display:block;color:#fff;font-size:20px}.content{max-width:1180px;margin:0 auto;padding:26px 24px 50px}.empty{padding:20px 0;color:#5b6871}.devices{background:#fff;border:1px solid #d8e0e4;border-radius:8px;margin:0 0 16px;padding:16px 18px}.devices h2{font-size:17px;margin:0 0 12px}.device-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}.device{border:1px solid #e3eaed;border-radius:6px;padding:11px 12px}.device strong{font-size:14px}.device small{display:block;color:#65747d;line-height:1.5;margin-top:6px}.device code{display:block;color:#51616c;font-size:11px;overflow-wrap:anywhere;margin-top:8px}.device-status{border-radius:999px;padding:2px 7px;font-size:11px;margin-left:7px}.online{background:#d9f0e2;color:#21643a}.offline{background:#edf1f2;color:#65747d}.scope{background:#fff;border:1px solid #d8e0e4;border-radius:8px;margin:0 0 16px;overflow:hidden}.scope-head{display:flex;gap:14px;align-items:center;padding:16px 18px;border-bottom:1px solid #e5ebed}.logo,.logo-placeholder{width:48px;height:48px;border-radius:6px;background:#dde7eb;object-fit:cover;flex:none}.logo-placeholder{display:grid;place-items:center;color:#78909c;font-size:18px}.scope-title{min-width:0;flex:1}.scope-title h2{font-size:17px;margin:0 0 5px;overflow-wrap:anywhere}.scope-id{font-size:12px;color:#51616c;overflow-wrap:anywhere}.status{display:inline-block;margin-left:8px;border-radius:999px;padding:2px 7px;font-size:11px;font-weight:600;vertical-align:2px}.matched{background:#d9f0e2;color:#21643a}.unmatched{background:#fff0cc;color:#805a00}.head{font-size:12px;color:#51616c;text-align:right;white-space:nowrap}.head code{display:block;max-width:220px;overflow-wrap:anywhere;color:#173e50}.scope-body{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:0}.history{padding:14px 18px}.history h3,.edit h3{font-size:13px;margin:0 0 10px;color:#40515c}.history-summary{font-size:12px;color:#65747d;margin:-3px 0 8px}.snapshot{display:grid;grid-template-columns:1fr auto;gap:5px;padding:9px 0;border-top:1px solid #edf1f2;font-size:13px}.snapshot:first-of-type{border-top:0}.snapshot code{overflow-wrap:anywhere;color:#1c485e}.snapshot small{color:#65747d}.edit{background:#f6f9fa;border-left:1px solid #e3eaed;padding:14px 18px}.edit label{display:block;font-size:12px;margin:10px 0 4px;color:#40515c}.edit input{width:100%;border:1px solid #b9c8cf;border-radius:4px;padding:8px;background:#fff;color:#192630}.edit button{margin-top:13px;border:0;border-radius:4px;background:#006b80;color:#fff;padding:9px 14px;font-weight:600;cursor:pointer}@media (prefers-color-scheme:dark){:root{color:#e6edf0;background:#10191e}.devices,.scope{background:#172329;border-color:#34444d}.scope-head{border-color:#34444d}.edit{background:#132027;border-color:#34444d}.edit input{background:#0e171c;color:#e6edf0;border-color:#53666f}.snapshot,.device{border-color:#2b3a42}.scope-title code,.head,.snapshot small,.history-summary,.device small,.device code{color:#aebfc7}.matched{background:#1b432a;color:#b9ebc8}.unmatched{background:#4b3b12;color:#f7d676}.offline{background:#2b3a42;color:#aebfc7}}@media(max-width:840px){.top{display:block}.metrics{margin-top:18px}}@media(max-width:720px){.metrics{grid-template-columns:repeat(2,1fr)}.scope-body{grid-template-columns:1fr}.edit{border-left:0;border-top:1px solid #e3eaed}.head{display:none}}
+</style></head><body><header class="top"><div><h1>Eden 存档同步</h1><p>按存档范围查看快照与同步状态</p></div><div class="metrics"><span class="metric"><strong>{{.ScopeCount}}</strong>存档范围</span><span class="metric"><strong>{{.SnapshotCount}}</strong>快照</span><span class="metric"><strong>{{.ObjectCount}}</strong>唯一对象</span><span class="metric"><strong>{{.DuplicateObjectRefs}}</strong>重复引用</span><span class="metric"><strong>{{.OnlineDeviceCount}}/{{.DeviceCount}}</strong>在线设备</span></div></header><main class="content"><section class="devices"><h2>接入设备</h2>{{if .Devices}}<div class="device-grid">{{range .Devices}}<div class="device"><div><strong>{{if .Name}}{{.Name}}{{else}}未命名设备{{end}}</strong><span class="device-status {{if .Online}}online{{else}}offline{{end}}">{{if .Online}}在线{{else}}离线{{end}}</span></div><small>{{.Platform}}{{if .Version}} · {{.Version}}{{end}}<br>最后活动：{{deviceTime .LastSeen}}</small><code>{{.ID}}</code></div>{{end}}</div>{{else}}<p class="empty">尚未发现设备接入。</p>{{end}}</section>{{if .Scopes}}{{range .Scopes}}<section class="scope"><div class="scope-head">{{if .LogoURL}}<img class="logo" src="{{.LogoURL}}" alt="{{.Title}}">{{else}}<div class="logo-placeholder" aria-hidden="true">E</div>{{end}}<div class="scope-title"><h2>{{.Title}}{{if .Named}}<span class="status matched">已匹配</span>{{else}}<span class="status unmatched">待匹配</span>{{end}}</h2><code class="scope-id">范围 {{.ID}}</code></div><div class="head">当前版本<code>{{.Head}}</code></div></div><div class="scope-body"><div class="history"><h3>快照历史</h3><p class="history-summary">{{.SnapshotCount}} 个快照</p>{{range .Snapshots}}<div class="snapshot"><div><code>{{.ID}}</code><small>{{if .Parent}}父版本 {{.Parent}}{{else}}初始快照{{end}}</small></div><div><small>{{.CreatedAt.Local.Format "2006-01-02 15:04:05"}}<br>{{formatBytes .Bytes}}</small></div></div>{{end}}</div><form class="edit" method="post" action="/admin/scopes/{{.ID}}"><h3>显示设置</h3><label for="title-{{.ID}}">显示名称</label><input id="title-{{.ID}}" name="title" maxlength="80" value="{{.Title}}" placeholder="游戏或设备名称"><label for="logo-{{.ID}}">Logo 图片地址</label><input id="logo-{{.ID}}" name="logo_url" maxlength="2048" value="{{.EditLogoURL}}" placeholder="可选，填写图片地址"><button type="submit">保存</button></form></div></section>{{end}}{{else}}<p class="empty">尚未上传存档快照。</p>{{end}}</main></body></html>`))
 
 func (s *server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	view := dashboardView{ScopeCount: len(s.state.Scopes)}
+	now := time.Now().UTC()
+	for _, device := range s.dashboard.Devices {
+		display := dashboardDevice{
+			ID:       device.ID,
+			Name:     device.Name,
+			Platform: device.Platform,
+			Version:  device.Version,
+			LastSeen: device.LastSeen,
+			Online:   now.Sub(device.LastSeen) <= 90*time.Second,
+		}
+		view.Devices = append(view.Devices, display)
+		view.DeviceCount++
+		if display.Online {
+			view.OnlineDeviceCount++
+		}
+	}
 	objects := make(map[string]int)
 	for scopeID, storedScope := range s.state.Scopes {
 		metadata := s.dashboard.Scopes[scopeID]
@@ -407,6 +499,12 @@ func (s *server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		view.Scopes = append(view.Scopes, display)
 	}
 	s.mu.Unlock()
+	sort.Slice(view.Devices, func(left, right int) bool {
+		if view.Devices[left].Online != view.Devices[right].Online {
+			return view.Devices[left].Online
+		}
+		return view.Devices[left].LastSeen.After(view.Devices[right].LastSeen)
+	})
 	for _, references := range objects {
 		if references > 1 {
 			view.DuplicateObjectRefs += references - 1
@@ -473,9 +571,15 @@ func (s *server) handleUpdateScopeMetadata(w http.ResponseWriter, r *http.Reques
 	if metadata.LogoURL != "" {
 		metadata.LogoData = ""
 	}
-	next := dashboardState{Scopes: make(map[string]scopeMetadata, len(s.dashboard.Scopes)+1)}
+	next := dashboardState{
+		Scopes:  make(map[string]scopeMetadata, len(s.dashboard.Scopes)+1),
+		Devices: make(map[string]deviceInfo, len(s.dashboard.Devices)),
+	}
 	for id, current := range s.dashboard.Scopes {
 		next.Scopes[id] = current
+	}
+	for id, device := range s.dashboard.Devices {
+		next.Devices[id] = device
 	}
 	if metadata.Title == "" && metadata.LogoURL == "" && metadata.LogoData == "" {
 		delete(next.Scopes, scopeID)
@@ -510,9 +614,15 @@ func (s *server) handlePutScopeMetadata(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.mu.Lock()
-	next := dashboardState{Scopes: make(map[string]scopeMetadata, len(s.dashboard.Scopes)+1)}
+	next := dashboardState{
+		Scopes:  make(map[string]scopeMetadata, len(s.dashboard.Scopes)+1),
+		Devices: make(map[string]deviceInfo, len(s.dashboard.Devices)),
+	}
 	for id, current := range s.dashboard.Scopes {
 		next.Scopes[id] = current
+	}
+	for id, device := range s.dashboard.Devices {
+		next.Devices[id] = device
 	}
 	current := next.Scopes[scopeID]
 	if metadata.Title != "" {
@@ -609,6 +719,9 @@ func (s *server) loadDashboard() error {
 	}
 	if s.dashboard.Scopes == nil {
 		s.dashboard.Scopes = make(map[string]scopeMetadata)
+	}
+	if s.dashboard.Devices == nil {
+		s.dashboard.Devices = make(map[string]deviceInfo)
 	}
 	return nil
 }
