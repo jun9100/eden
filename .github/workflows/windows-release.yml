@@ -28,6 +28,11 @@ jobs:
           version: 1.4.304.1
           cache: true
 
+      - name: Load Visual Studio x64 build tools
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Configure Release build
         shell: pwsh
         run: >-
@@ -35,6 +40,8 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DYUZU_TESTS=OFF
           -DENABLE_QT_TRANSLATION=ON
+          -DCMAKE_C_COMPILER=cl
+          -DCMAKE_CXX_COMPILER=cl
           -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
 
       - name: Build Eden
