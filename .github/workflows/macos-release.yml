@@ -1,0 +1,47 @@
+name: macOS Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Release build
+        run: >-
+          cmake -S . -B build-macos -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DYUZU_TESTS=OFF
+          -DENABLE_QT_TRANSLATION=ON
+          -DYUZU_USE_BUNDLED_QT=ON
+
+      - name: Build Eden
+        run: cmake --build build-macos --config Release --target yuzu
+
+      - name: Package macOS application
+        run: |
+          test -d build-macos/bin/eden.app
+          ditto -c -k --sequesterRsrc --keepParent \
+            build-macos/bin/eden.app eden-macos-arm64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eden-macos-arm64-release
+          path: eden-macos-arm64.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: eden-macos-arm64.zip
