@@ -64,6 +64,20 @@ For Synology and other NAS systems, set `PUID` and `PGID` in `.env` to the numer
 `EDEN_SYNCD_DATA_DIR`; the container uses these values to avoid changing permissions on existing
 encrypted backup data.
 
+### Synology Container Manager
+
+Use [`compose.synology.yaml`](compose.synology.yaml) when deploying through Synology Container
+Manager. It intentionally does not use Compose variable interpolation, which some DSM releases
+reject during project creation. Copy it as `compose.yaml`, create a sibling `.env` file with only:
+
+```sh
+EDEN_SYNCD_TOKEN=replace-with-a-long-random-sync-token
+EDEN_SYNCD_ADMIN_TOKEN=replace-with-a-different-long-random-admin-token
+```
+
+Before starting the project, set the `user` field to the numeric owner of
+`/volume1/docker/eden-syncd/data` and adjust the host data path or `8788` port where needed.
+
 ## Run with systemd
 
 The [`eden-syncd.service`](eden-syncd.service) template is useful when Docker images cannot be
