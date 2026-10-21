@@ -20,7 +20,7 @@ jobs:
         with:
           version: '6.8.3'
           arch: win64_msvc2022_64
-          modules: qtcharts qttools
+          modules: qtcharts
 
       - name: Install Vulkan SDK
         uses: humbletim/install-vulkan-sdk@v1.2
