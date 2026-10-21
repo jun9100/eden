@@ -4,6 +4,7 @@
 services:
   eden-syncd:
     image: ${EDEN_SYNCD_IMAGE:-jun9100/eden-syncd:latest}
+    user: "${PUID:-10001}:${PGID:-10001}"
     environment:
       EDEN_SYNCD_TOKEN: ${EDEN_SYNCD_TOKEN:?set EDEN_SYNCD_TOKEN in .env}
       EDEN_SYNCD_ADMIN_TOKEN: ${EDEN_SYNCD_ADMIN_TOKEN:-}

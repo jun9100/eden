@@ -60,6 +60,10 @@ docker compose -f compose.nas.yaml up -d
 run this Compose service against the same port and data directory until the systemd service has
 been stopped.
 
+For Synology and other NAS systems, set `PUID` and `PGID` in `.env` to the numeric owner of
+`EDEN_SYNCD_DATA_DIR`; the container uses these values to avoid changing permissions on existing
+encrypted backup data.
+
 ## Run with systemd
 
 The [`eden-syncd.service`](eden-syncd.service) template is useful when Docker images cannot be
