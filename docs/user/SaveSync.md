@@ -64,17 +64,17 @@ When Docker image pulls are unavailable, the service source also includes an
 
 ### LAN dashboard
 
-`eden-syncd` can expose a small administrator dashboard at `/admin/`. Add a separate,
-long random `EDEN_SYNCD_ADMIN_TOKEN` to the Compose `.env` file (or systemd
-`/etc/eden-syncd.env`), restart the service, and open
-`http://<private-NAS-IP>:<port>/admin/` on the home LAN. HTTP Basic Auth will prompt for it;
-the username is arbitrary and the password is the administrator token.
+`eden-syncd` includes an administrator dashboard at `/admin/`. Add a separate, long random
+`EDEN_SYNCD_ADMIN_TOKEN` to the Compose `.env` file (or systemd `/etc/eden-syncd.env`), restart the
+service, open `http://<private-NAS-IP>:<port>/admin/` on the home LAN and sign in with that token.
 
-The dashboard lists encrypted snapshot scopes, history and storage consumption. The server cannot
-know which game or account an opaque encrypted scope belongs to, so an administrator can manually
-set a display name and Logo URL for each scope. These display labels are held separately from the
-saves and do not modify game files or encrypted backups. Do not reuse the sync bearer token as the
-administrator token, and do not expose this page to the public Internet.
+The dashboard shows every synced game with its snapshot history, connected devices, storage use and
+recent activity. From it you can restore an older snapshot as the current cloud version (apply it on
+a device with **Download latest cloud saves**), pin snapshots, configure automatic retention, reclaim
+unused storage, and verify that every stored snapshot is intact. The server only ever sees encrypted
+data; game names and icons come from the Eden clients or from labels you enter. Do not reuse the
+sync bearer token as the administrator token, and do not expose this page to the public Internet.
+See [`tools/eden_syncd/README.md`](../../tools/eden_syncd/README.md) for all options.
 
 ### Private LAN HTTP
 

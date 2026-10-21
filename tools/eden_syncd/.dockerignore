@@ -1,0 +1,6 @@
+.env
+data/
+*_test.go
+*.yaml
+*.service
+README.md

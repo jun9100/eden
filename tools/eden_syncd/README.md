@@ -15,31 +15,68 @@ go run . --data-dir ./data --listen 127.0.0.1:8787
 The health endpoint is unauthenticated at `GET /healthz`. All `/v1` endpoints require
 `Authorization: Bearer <token>`.
 
-## LAN dashboard
+## Administrator dashboard
 
-Set the optional `EDEN_SYNCD_ADMIN_TOKEN` to enable `GET /admin/`. Open
-`http://<nas-private-ip>:<port>/admin/` from the home LAN and authenticate with
-HTTP Basic Auth: the username can be any non-empty value and the password is the
-administrator token. This must be a different secret from `EDEN_SYNCD_TOKEN`.
-The dashboard shows scope, snapshot, and content-addressed object counts,
-including repeated object references, and lets the administrator attach a
-display name and HTTPS/HTTP Logo URL to each scope. Eden clients can publish a
-game title and icon as metadata; when that metadata is available it is shown
-automatically. Manual labels remain available for older clients or unmatched
-games. These labels are stored separately in `dashboard.json` and never alter
-encrypted snapshots. Embedded client icons are served through the authenticated
-dashboard and are not placed in the editable URL field.
+Set the optional `EDEN_SYNCD_ADMIN_TOKEN` (it must differ from `EDEN_SYNCD_TOKEN`; when the two
+match the dashboard stays disabled) and open `http://<nas-private-ip>:<port>/admin/` from the home
+LAN. Sign in with the administrator token; the session is kept for seven days in an HttpOnly,
+SameSite=Strict cookie and repeated wrong tokens are rate limited per address.
 
-Repeated object references are reported for inspection only. The server never
-merges scopes or deletes snapshots automatically, because separate scopes may
-belong to different games, accounts, or devices. Keep the dashboard on the
-private LAN; do not publish it on the Internet.
+The dashboard provides:
 
-Clients identify themselves with a local persistent device ID. The dashboard
-lists the device name, platform, Eden version, and last activity; a device is
-shown as online while it has contacted the service within the last 90 seconds.
-The device ID is not a credential and is stored only in the client's local
-save-sync cache.
+- **Overview**: save scopes, snapshots, stored bytes and deduplication savings, online devices,
+  free space on the data volume, a 30-day upload/conflict chart and recent activity.
+- **Saves**: searchable game list with covers. Eden clients publish the game title and icon
+  automatically; a display name and logo URL can also be set manually. Each scope shows its
+  snapshot history with the uploading device and size, and supports:
+  - *Set as current*: commits a new head that references an older encrypted snapshot. History is
+    kept. Devices apply it with **Download latest cloud saves**; existing local saves are never
+    overwritten automatically.
+  - *Pin*: pinned snapshots are never removed by the retention policy.
+  - *Download* the encrypted snapshot (it cannot be read without the Vault key).
+  - Delete individual snapshots (never the current one) or the whole scope.
+- **Devices**: platform, Eden version, address, last activity, upload counts; devices can be given
+  an alias or removed from the list (removal does not revoke access; rotate the sync token for
+  that).
+- **Activity**: the last 500 uploads, conflicts, restores and maintenance events.
+- **Maintenance**: retention policy, storage cleanup with a dry-run preview, and an integrity check
+  that rehashes every referenced object.
+
+All dashboard features are also available as a JSON API under `/admin/api/`, which accepts HTTP
+Basic Auth (any username, administrator token as the password). State-changing requests must send
+`X-Eden-Admin: 1`. Prometheus metrics are served at `/metrics` with the same authentication.
+Keep the dashboard on the private LAN; do not publish it on the Internet.
+
+### Retention and garbage collection
+
+By default every snapshot is kept. A retention policy keeps a snapshot when it is among the newest
+*N* of its scope **or** younger than *D* days; the current head and pinned snapshots are always
+kept. The policy runs after each upload and, together with collection of unreferenced objects,
+every `--maintenance-interval` (6 hours by default). Objects uploaded within the last hour are never
+collected, so in-flight client uploads are safe. Initial values come from
+`EDEN_SYNCD_KEEP_SNAPSHOTS` / `EDEN_SYNCD_KEEP_DAYS`; once saved in the dashboard they are stored in
+`data/settings.json` and take precedence.
+
+### Configuration
+
+| Flag | Environment variable | Default |
+| --- | --- | --- |
+| `--token` | `EDEN_SYNCD_TOKEN` | required |
+| `--admin-token` | `EDEN_SYNCD_ADMIN_TOKEN` | dashboard disabled |
+| `--data-dir` | `EDEN_SYNCD_DATA` | `./data` (`/var/lib/eden-syncd` in Docker) |
+| `--listen` | `EDEN_SYNCD_LISTEN` | `:8787` |
+| `--max-object-mib` | `EDEN_SYNCD_MAX_OBJECT_MIB` | `512` |
+| `--keep-snapshots` | `EDEN_SYNCD_KEEP_SNAPSHOTS` | `0` (unlimited) |
+| `--keep-days` | `EDEN_SYNCD_KEEP_DAYS` | `0` (unlimited) |
+| `--maintenance-interval` | `EDEN_SYNCD_MAINTENANCE_INTERVAL` | `6h` (`0` disables) |
+| `--log-format` | `EDEN_SYNCD_LOG_FORMAT` | `text` (or `json`) |
+
+`eden-syncd healthcheck` probes `/healthz` and is used by the Docker `HEALTHCHECK`.
+`eden-syncd --version` prints the build version.
+
+Clients identify themselves with a local persistent device ID. A device is shown as online while
+it has contacted the service within the last 90 seconds. The device ID is not a credential and is
+stored only in the client's local save-sync cache.
 
 Normal automatic sync is conflict-safe: a local save never silently replaces a
 newer cloud head, and a conflict is retained locally for review. The desktop
@@ -120,6 +157,7 @@ Place the service behind HTTPS. A Tailscale network is the recommended home-NAS 
 it avoids exposing port 8787 publicly. For a public deployment, use a reverse proxy with a valid
 TLS certificate and do not publish the service without authentication.
 
-The `data` directory contains every encrypted object and the snapshot index. Include it in the
-NAS backup policy and test restoration independently of Eden. It also contains the optional
-dashboard display labels in `dashboard.json`.
+The `data` directory contains every encrypted object and the snapshot index (`state.json`). Include
+it in the NAS backup policy and test restoration independently of Eden. It also holds dashboard
+labels and devices (`dashboard.json`), dashboard settings (`settings.json`) and the activity log
+(`events.json`). Data directories from earlier releases are read without migration.
