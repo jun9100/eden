@@ -194,6 +194,8 @@ object NativeLibrary {
      */
     external fun uploadPendingSaveSync(): Boolean
 
+    external fun setSaveSyncGameMetadata(programId: Long, title: String, icon: ByteArray)
+
     /**
      * Returns true if emulation is running (or is paused).
      */

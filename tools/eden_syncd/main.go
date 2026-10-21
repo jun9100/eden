@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -46,8 +47,9 @@ type serverState struct {
 }
 
 type scopeMetadata struct {
-	Title   string `json:"title,omitempty"`
-	LogoURL string `json:"logo_url,omitempty"`
+	Title    string `json:"title,omitempty"`
+	LogoURL  string `json:"logo_url,omitempty"`
+	LogoData string `json:"logo_data,omitempty"`
 }
 
 type dashboardState struct {
@@ -105,7 +107,9 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/blobs/{id}", s.requireToken(s.handleGetBlob))
 	mux.HandleFunc("GET /v1/scopes/{id}/head", s.requireToken(s.handleGetHead))
 	mux.HandleFunc("PUT /v1/scopes/{id}/snapshots/{snapshot}", s.requireToken(s.handlePutSnapshot))
+	mux.HandleFunc("PUT /v1/scopes/{id}/metadata", s.requireToken(s.handlePutScopeMetadata))
 	mux.HandleFunc("GET /admin/", s.requireAdmin(s.handleDashboard))
+	mux.HandleFunc("GET /admin/scopes/{id}/logo", s.requireAdmin(s.handleScopeLogo))
 	mux.HandleFunc("POST /admin/scopes/{id}", s.requireAdmin(s.handleUpdateScopeMetadata))
 	return mux
 }
@@ -331,46 +335,63 @@ type dashboardSnapshot struct {
 }
 
 type dashboardScope struct {
-	ID        string
-	Title     string
-	LogoURL   string
-	Head      string
-	Snapshots []dashboardSnapshot
+	ID            string
+	Title         string
+	LogoURL       string
+	EditLogoURL   string
+	Head          string
+	Named         bool
+	SnapshotCount int
+	Snapshots     []dashboardSnapshot
 }
 
 type dashboardView struct {
-	ScopeCount  int
-	ObjectCount int
-	TotalBytes  int64
-	Scopes      []dashboardScope
+	ScopeCount          int
+	SnapshotCount       int
+	ObjectCount         int
+	DuplicateObjectRefs int
+	TotalBytes          int64
+	Scopes              []dashboardScope
 }
 
 var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{
 	"formatBytes": formatBytes,
 }).Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Eden 存档同步</title><style>
 :root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#1c2732;background:#eef3f5}
-*{box-sizing:border-box}body{margin:0}.top{background:#133d52;color:#fff;padding:22px max(24px,calc((100vw - 1180px)/2));display:flex;justify-content:space-between;align-items:baseline}.top h1{margin:0;font-size:25px}.top p{margin:4px 0 0;color:#bed6df;font-size:14px}.metrics{display:flex;gap:26px}.metric{font-size:13px;color:#bed6df}.metric strong{display:block;color:#fff;font-size:20px}.content{max-width:1180px;margin:0 auto;padding:26px 24px 50px}.empty{padding:36px 0;color:#5b6871}.scope{background:#fff;border:1px solid #d8e0e4;border-radius:8px;margin:0 0 16px;overflow:hidden}.scope-head{display:flex;gap:16px;align-items:center;padding:16px 18px;border-bottom:1px solid #e5ebed}.logo{width:48px;height:48px;border-radius:6px;background:#dde7eb;object-fit:cover;flex:none}.scope-title{min-width:0;flex:1}.scope-title h2{font-size:17px;margin:0 0 4px}.scope-title code{font-size:12px;color:#51616c;overflow-wrap:anywhere}.head{font-size:12px;color:#51616c;text-align:right}.head code{display:block;max-width:220px;overflow-wrap:anywhere;color:#173e50}.scope-body{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:0}.history{padding:14px 18px}.history h3,.edit h3{font-size:13px;margin:0 0 10px;color:#40515c}.snapshot{display:grid;grid-template-columns:1fr auto;gap:5px;padding:9px 0;border-top:1px solid #edf1f2;font-size:13px}.snapshot:first-of-type{border-top:0}.snapshot code{overflow-wrap:anywhere;color:#1c485e}.snapshot small{color:#65747d}.edit{background:#f6f9fa;border-left:1px solid #e3eaed;padding:14px 18px}.edit label{display:block;font-size:12px;margin:10px 0 4px;color:#40515c}.edit input{width:100%;border:1px solid #b9c8cf;border-radius:4px;padding:8px;background:#fff;color:#192630}.edit button{margin-top:13px;border:0;border-radius:4px;background:#006b80;color:#fff;padding:9px 14px;font-weight:600;cursor:pointer}@media (prefers-color-scheme:dark){:root{color:#e6edf0;background:#10191e}.scope{background:#172329;border-color:#34444d}.scope-head{border-color:#34444d}.edit{background:#132027;border-color:#34444d}.edit input{background:#0e171c;color:#e6edf0;border-color:#53666f}.snapshot{border-color:#2b3a42}.scope-title code,.head,.snapshot small{color:#aebfc7}}@media(max-width:720px){.top{display:block}.metrics{margin-top:18px}.scope-body{grid-template-columns:1fr}.edit{border-left:0;border-top:1px solid #e3eaed}.head{display:none}}
-</style></head><body><header class="top"><div><h1>Eden 存档同步</h1><p>加密存档快照索引</p></div><div class="metrics"><span class="metric"><strong>{{.ScopeCount}}</strong>存档范围</span><span class="metric"><strong>{{.ObjectCount}}</strong>对象</span><span class="metric"><strong>{{formatBytes .TotalBytes}}</strong>已存储</span></div></header><main class="content">{{if .Scopes}}{{range .Scopes}}<section class="scope"><div class="scope-head">{{if .LogoURL}}<img class="logo" src="{{.LogoURL}}" alt="">{{else}}<div class="logo"></div>{{end}}<div class="scope-title"><h2>{{.Title}}</h2><code>{{.ID}}</code></div><div class="head">当前版本<code>{{.Head}}</code></div></div><div class="scope-body"><div class="history"><h3>快照历史</h3>{{range .Snapshots}}<div class="snapshot"><div><code>{{.ID}}</code><small>{{if .Parent}}父版本 {{.Parent}}{{else}}初始快照{{end}}</small></div><div><small>{{.CreatedAt.Local.Format "2006-01-02 15:04:05"}}<br>{{formatBytes .Bytes}}</small></div></div>{{end}}</div><form class="edit" method="post" action="/admin/scopes/{{.ID}}"><h3>显示设置</h3><label for="title-{{.ID}}">显示名称</label><input id="title-{{.ID}}" name="title" maxlength="80" value="{{.Title}}" placeholder="游戏或设备名称"><label for="logo-{{.ID}}">Logo 图片地址</label><input id="logo-{{.ID}}" name="logo_url" maxlength="2048" value="{{.LogoURL}}" placeholder="https://example.com/logo.png"><button type="submit">保存</button></form></div></section>{{end}}{{else}}<p class="empty">尚未上传存档快照。</p>{{end}}</main></body></html>`))
+*{box-sizing:border-box}body{margin:0}.top{background:#133d52;color:#fff;padding:22px max(24px,calc((100vw - 1180px)/2));display:flex;justify-content:space-between;align-items:flex-start;gap:24px}.top h1{margin:0;font-size:25px}.top p{margin:4px 0 0;color:#bed6df;font-size:14px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(72px,auto));gap:20px}.metric{font-size:12px;color:#bed6df;white-space:nowrap}.metric strong{display:block;color:#fff;font-size:20px}.content{max-width:1180px;margin:0 auto;padding:26px 24px 50px}.empty{padding:36px 0;color:#5b6871}.scope{background:#fff;border:1px solid #d8e0e4;border-radius:8px;margin:0 0 16px;overflow:hidden}.scope-head{display:flex;gap:14px;align-items:center;padding:16px 18px;border-bottom:1px solid #e5ebed}.logo,.logo-placeholder{width:48px;height:48px;border-radius:6px;background:#dde7eb;object-fit:cover;flex:none}.logo-placeholder{display:grid;place-items:center;color:#78909c;font-size:18px}.scope-title{min-width:0;flex:1}.scope-title h2{font-size:17px;margin:0 0 5px;overflow-wrap:anywhere}.scope-id{font-size:12px;color:#51616c;overflow-wrap:anywhere}.status{display:inline-block;margin-left:8px;border-radius:999px;padding:2px 7px;font-size:11px;font-weight:600;vertical-align:2px}.matched{background:#d9f0e2;color:#21643a}.unmatched{background:#fff0cc;color:#805a00}.head{font-size:12px;color:#51616c;text-align:right;white-space:nowrap}.head code{display:block;max-width:220px;overflow-wrap:anywhere;color:#173e50}.scope-body{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:0}.history{padding:14px 18px}.history h3,.edit h3{font-size:13px;margin:0 0 10px;color:#40515c}.history-summary{font-size:12px;color:#65747d;margin:-3px 0 8px}.snapshot{display:grid;grid-template-columns:1fr auto;gap:5px;padding:9px 0;border-top:1px solid #edf1f2;font-size:13px}.snapshot:first-of-type{border-top:0}.snapshot code{overflow-wrap:anywhere;color:#1c485e}.snapshot small{color:#65747d}.edit{background:#f6f9fa;border-left:1px solid #e3eaed;padding:14px 18px}.edit label{display:block;font-size:12px;margin:10px 0 4px;color:#40515c}.edit input{width:100%;border:1px solid #b9c8cf;border-radius:4px;padding:8px;background:#fff;color:#192630}.edit button{margin-top:13px;border:0;border-radius:4px;background:#006b80;color:#fff;padding:9px 14px;font-weight:600;cursor:pointer}@media (prefers-color-scheme:dark){:root{color:#e6edf0;background:#10191e}.scope{background:#172329;border-color:#34444d}.scope-head{border-color:#34444d}.edit{background:#132027;border-color:#34444d}.edit input{background:#0e171c;color:#e6edf0;border-color:#53666f}.snapshot{border-color:#2b3a42}.scope-title code,.head,.snapshot small,.history-summary{color:#aebfc7}.matched{background:#1b432a;color:#b9ebc8}.unmatched{background:#4b3b12;color:#f7d676}}@media(max-width:840px){.top{display:block}.metrics{margin-top:18px}}@media(max-width:720px){.metrics{grid-template-columns:repeat(2,1fr)}.scope-body{grid-template-columns:1fr}.edit{border-left:0;border-top:1px solid #e3eaed}.head{display:none}}
+</style></head><body><header class="top"><div><h1>Eden 存档同步</h1><p>按存档范围查看快照与同步状态</p></div><div class="metrics"><span class="metric"><strong>{{.ScopeCount}}</strong>存档范围</span><span class="metric"><strong>{{.SnapshotCount}}</strong>快照</span><span class="metric"><strong>{{.ObjectCount}}</strong>唯一对象</span><span class="metric"><strong>{{.DuplicateObjectRefs}}</strong>重复引用</span></div></header><main class="content">{{if .Scopes}}{{range .Scopes}}<section class="scope"><div class="scope-head">{{if .LogoURL}}<img class="logo" src="{{.LogoURL}}" alt="{{.Title}}">{{else}}<div class="logo-placeholder" aria-hidden="true">E</div>{{end}}<div class="scope-title"><h2>{{.Title}}{{if .Named}}<span class="status matched">已匹配</span>{{else}}<span class="status unmatched">待匹配</span>{{end}}</h2><code class="scope-id">范围 {{.ID}}</code></div><div class="head">当前版本<code>{{.Head}}</code></div></div><div class="scope-body"><div class="history"><h3>快照历史</h3><p class="history-summary">{{.SnapshotCount}} 个快照</p>{{range .Snapshots}}<div class="snapshot"><div><code>{{.ID}}</code><small>{{if .Parent}}父版本 {{.Parent}}{{else}}初始快照{{end}}</small></div><div><small>{{.CreatedAt.Local.Format "2006-01-02 15:04:05"}}<br>{{formatBytes .Bytes}}</small></div></div>{{end}}</div><form class="edit" method="post" action="/admin/scopes/{{.ID}}"><h3>显示设置</h3><label for="title-{{.ID}}">显示名称</label><input id="title-{{.ID}}" name="title" maxlength="80" value="{{.Title}}" placeholder="游戏或设备名称"><label for="logo-{{.ID}}">Logo 图片地址</label><input id="logo-{{.ID}}" name="logo_url" maxlength="2048" value="{{.EditLogoURL}}" placeholder="可选，填写图片地址"><button type="submit">保存</button></form></div></section>{{end}}{{else}}<p class="empty">尚未上传存档快照。</p>{{end}}</main></body></html>`))
 
 func (s *server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	view := dashboardView{ScopeCount: len(s.state.Scopes)}
-	objects := make(map[string]struct{})
+	objects := make(map[string]int)
 	for scopeID, storedScope := range s.state.Scopes {
 		metadata := s.dashboard.Scopes[scopeID]
 		title := metadata.Title
 		if title == "" {
 			title = "未命名存档范围"
 		}
-		display := dashboardScope{ID: scopeID, Title: title, LogoURL: metadata.LogoURL, Head: storedScope.Head}
+		logo := metadata.LogoURL
+		if metadata.LogoData != "" {
+			logo = "/admin/scopes/" + scopeID + "/logo"
+		}
+		display := dashboardScope{
+			ID:          scopeID,
+			Title:       title,
+			LogoURL:     logo,
+			EditLogoURL: metadata.LogoURL,
+			Head:        storedScope.Head,
+			Named:       metadata.Title != "",
+		}
 		for _, item := range storedScope.Snapshots {
+			view.SnapshotCount++
+			objects[item.Blob]++
 			bytes := int64(0)
 			if info, err := os.Stat(s.objectPath(item.Blob)); err == nil {
 				bytes = info.Size()
-				if _, counted := objects[item.Blob]; !counted {
-					objects[item.Blob] = struct{}{}
+				if objects[item.Blob] == 1 {
 					view.TotalBytes += bytes
 					view.ObjectCount++
 				}
@@ -379,19 +400,48 @@ func (s *server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 				ID: item.ID, Parent: item.Parent, CreatedAt: item.CreatedAt, Bytes: bytes,
 			})
 		}
+		display.SnapshotCount = len(display.Snapshots)
 		sort.Slice(display.Snapshots, func(left, right int) bool {
 			return display.Snapshots[left].CreatedAt.After(display.Snapshots[right].CreatedAt)
 		})
 		view.Scopes = append(view.Scopes, display)
 	}
 	s.mu.Unlock()
+	for _, references := range objects {
+		if references > 1 {
+			view.DuplicateObjectRefs += references - 1
+		}
+	}
 	sort.Slice(view.Scopes, func(left, right int) bool {
+		if view.Scopes[left].Named != view.Scopes[right].Named {
+			return view.Scopes[left].Named
+		}
 		return view.Scopes[left].Title < view.Scopes[right].Title
 	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := dashboardTemplate.Execute(w, view); err != nil {
 		log.Printf("render dashboard: %v", err)
 	}
+}
+
+func (s *server) handleScopeLogo(w http.ResponseWriter, r *http.Request) {
+	scopeID := r.PathValue("id")
+	if !validScopeID(scopeID) {
+		writeError(w, http.StatusBadRequest, "invalid scope")
+		return
+	}
+	s.mu.Lock()
+	logoData := s.dashboard.Scopes[scopeID].LogoData
+	s.mu.Unlock()
+	mediaType, decoded, ok := decodeLogoData(logoData)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(decoded)
 }
 
 func (s *server) handleUpdateScopeMetadata(w http.ResponseWriter, r *http.Request) {
@@ -419,11 +469,15 @@ func (s *server) handleUpdateScopeMetadata(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "scope not found")
 		return
 	}
+	metadata.LogoData = s.dashboard.Scopes[scopeID].LogoData
+	if metadata.LogoURL != "" {
+		metadata.LogoData = ""
+	}
 	next := dashboardState{Scopes: make(map[string]scopeMetadata, len(s.dashboard.Scopes)+1)}
 	for id, current := range s.dashboard.Scopes {
 		next.Scopes[id] = current
 	}
-	if metadata.Title == "" && metadata.LogoURL == "" {
+	if metadata.Title == "" && metadata.LogoURL == "" && metadata.LogoData == "" {
 		delete(next.Scopes, scopeID)
 	} else {
 		next.Scopes[scopeID] = metadata
@@ -438,12 +492,77 @@ func (s *server) handleUpdateScopeMetadata(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 }
 
+func (s *server) handlePutScopeMetadata(w http.ResponseWriter, r *http.Request) {
+	scopeID := r.PathValue("id")
+	if !validScopeID(scopeID) {
+		writeError(w, http.StatusBadRequest, "invalid scope")
+		return
+	}
+	var metadata scopeMetadata
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2*1024*1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&metadata); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid metadata")
+		return
+	}
+	if len([]rune(metadata.Title)) > 120 || !validLogoData(metadata.LogoData) {
+		writeError(w, http.StatusBadRequest, "invalid metadata")
+		return
+	}
+	s.mu.Lock()
+	next := dashboardState{Scopes: make(map[string]scopeMetadata, len(s.dashboard.Scopes)+1)}
+	for id, current := range s.dashboard.Scopes {
+		next.Scopes[id] = current
+	}
+	current := next.Scopes[scopeID]
+	if metadata.Title != "" {
+		current.Title = metadata.Title
+	}
+	if metadata.LogoData != "" {
+		current.LogoData = metadata.LogoData
+		current.LogoURL = ""
+	}
+	next.Scopes[scopeID] = current
+	if err := s.persistDashboard(next); err != nil {
+		s.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, "cannot persist metadata")
+		return
+	}
+	s.dashboard = next
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func validLogoURL(value string) bool {
 	if value == "" {
 		return true
 	}
 	parsed, err := url.ParseRequestURI(value)
 	return err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != ""
+}
+
+func validLogoData(value string) bool {
+	if value == "" {
+		return true
+	}
+	_, decoded, ok := decodeLogoData(value)
+	return ok && len(decoded) <= 1024*1024
+}
+
+func decodeLogoData(value string) (string, []byte, bool) {
+	header, encoded, ok := strings.Cut(value, ",")
+	if !ok || !strings.HasPrefix(header, "data:image/") || !strings.HasSuffix(header, ";base64") {
+		return "", nil, false
+	}
+	mediaType := strings.TrimSuffix(strings.TrimPrefix(header, "data:"), ";base64")
+	if strings.ContainsAny(mediaType, "\r\n; \t") {
+		return "", nil, false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) == 0 || len(decoded) > 1024*1024 {
+		return "", nil, false
+	}
+	return mediaType, decoded, true
 }
 
 func formatBytes(value int64) string {

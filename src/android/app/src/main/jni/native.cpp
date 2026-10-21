@@ -944,6 +944,22 @@ jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_uploadPendingSaveSync(JNIEnv* env
         EmulationSession::GetInstance().System().GetSaveSyncManager().UploadPending());
 }
 
+void Java_org_yuzu_yuzu_1emu_NativeLibrary_setSaveSyncGameMetadata(JNIEnv* env, jclass clazz,
+                                                                    jlong program_id,
+                                                                    jstring jtitle,
+                                                                    jbyteArray jicon) {
+    std::vector<u8> icon;
+    if (jicon != nullptr) {
+        const auto length = env->GetArrayLength(jicon);
+        icon.resize(static_cast<std::size_t>(length));
+        if (length > 0) {
+            env->GetByteArrayRegion(jicon, 0, length, reinterpret_cast<jbyte*>(icon.data()));
+        }
+    }
+    EmulationSession::GetInstance().System().GetSaveSyncManager().SetGameMetadata(
+        static_cast<u64>(program_id), Common::Android::GetJString(env, jtitle), std::move(icon));
+}
+
 jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_isRunning(JNIEnv* env, jclass clazz) {
     return static_cast<jboolean>(EmulationSession::GetInstance().IsRunning());
 }

@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "common/common_types.h"
 #include "core/file_sys/fs_save_data_types.h"
@@ -21,6 +22,7 @@ public:
 
     void TrackSaveData(FileSys::SaveDataSpaceId space, FileSys::SaveDataType type, u64 program_id,
                        u128 user_id, std::string relative_path);
+    void SetGameMetadata(u64 program_id, std::string title, std::vector<u8> icon);
     void CompleteSession();
     [[nodiscard]] bool UploadPending();
 

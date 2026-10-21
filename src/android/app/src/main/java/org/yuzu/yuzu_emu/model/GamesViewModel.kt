@@ -131,6 +131,7 @@ class GamesViewModel : ViewModel() {
                     }
 
                     setGames(GameHelper.getGames())
+                    GameHelper.publishSaveSyncMetadata()
                     _shouldScrollAfterReload.value = true
 
                     if (directoriesChanged) {

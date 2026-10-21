@@ -68,6 +68,7 @@ import org.yuzu.yuzu_emu.utils.ThemeHelper
 import java.text.NumberFormat
 import kotlin.math.roundToInt
 import org.yuzu.yuzu_emu.utils.ForegroundService
+import org.yuzu.yuzu_emu.utils.GameMetadata
 import androidx.core.os.BundleCompat
 
 class EmulationActivity : AppCompatActivity(), SensorEventListener, InputManager.InputDeviceListener {
@@ -807,6 +808,9 @@ class EmulationActivity : AppCompatActivity(), SensorEventListener, InputManager
 
     fun updateSessionGame(game: Game?) {
         processSessionGame = game
+        game?.programId?.toLongOrNull()?.let { programId ->
+            NativeLibrary.setSaveSyncGameMetadata(programId, game.title, GameMetadata.getIcon(game.path))
+        }
     }
 
     fun onProgramChanged(programIndex: Int) {

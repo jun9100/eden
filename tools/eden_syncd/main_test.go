@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -347,5 +349,140 @@ func TestDashboardMetadataSurvivesRestart(t *testing.T) {
 	if !bytes.Contains(body, []byte("Super Mario Odyssey")) ||
 		!bytes.Contains(body, []byte("https://example.com/odyssey.png")) {
 		t.Fatalf("dashboard metadata missing from %q", body)
+	}
+}
+
+func TestScopeMetadataCanBePublishedBySyncClient(t *testing.T) {
+	dataDir := t.TempDir()
+	s, err := newServer(dataDir, testToken, 1024*1024, "dashboard-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(s.handler())
+	defer httpServer.Close()
+
+	object := putObject(t, httpServer.URL, []byte("dashboard logo snapshot"))
+	snapshotJSON, err := json.Marshal(snapshot{ID: "snapshot-1", Blob: object, CreatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotRequest := authorizedRequest(t, http.MethodPut,
+		httpServer.URL+"/v1/scopes/account-1/snapshots/snapshot-1", snapshotJSON)
+	snapshotRequest.Header.Set("If-Match", `""`)
+	snapshotResponse, err := http.DefaultClient.Do(snapshotRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotResponse.Body.Close()
+	if snapshotResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("snapshot status = %d", snapshotResponse.StatusCode)
+	}
+
+	request := authorizedRequest(t, http.MethodPut, httpServer.URL+"/v1/scopes/account-1/metadata",
+		[]byte(`{"title":"Super Mario Odyssey","logo_data":"data:image/png;base64,AA=="}`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("metadata publish status = %d", response.StatusCode)
+	}
+
+	contents, err := os.ReadFile(filepath.Join(dataDir, "dashboard.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(contents, []byte("Super Mario Odyssey")) ||
+		!bytes.Contains(contents, []byte("data:image/png;base64,AA==")) {
+		t.Fatalf("published metadata missing from %q", contents)
+	}
+}
+
+func TestDashboardServesPublishedLogoWithoutEmbeddingBase64(t *testing.T) {
+	s, err := newServer(t.TempDir(), testToken, 1024*1024, "dashboard-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(s.handler())
+	defer httpServer.Close()
+
+	object := putObject(t, httpServer.URL, []byte("dashboard logo snapshot"))
+	snapshotJSON, err := json.Marshal(snapshot{ID: "snapshot-1", Blob: object, CreatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotRequest := authorizedRequest(t, http.MethodPut,
+		httpServer.URL+"/v1/scopes/account-1/snapshots/snapshot-1", snapshotJSON)
+	snapshotRequest.Header.Set("If-Match", `""`)
+	snapshotResponse, err := http.DefaultClient.Do(snapshotRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotResponse.Body.Close()
+	if snapshotResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("snapshot status = %d", snapshotResponse.StatusCode)
+	}
+
+	request := authorizedRequest(t, http.MethodPut, httpServer.URL+"/v1/scopes/account-1/metadata",
+		[]byte(`{"title":"Super Mario Odyssey","logo_data":"data:image/png;base64,AA=="}`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("metadata publish status = %d", response.StatusCode)
+	}
+
+	response, err = http.DefaultClient.Do(adminRequest(t, http.MethodGet,
+		httpServer.URL+"/admin/", nil, "dashboard-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard status = %d", response.StatusCode)
+	}
+	if !bytes.Contains(page, []byte(`/admin/scopes/account-1/logo`)) ||
+		bytes.Contains(page, []byte("data:image/png;base64,AA==")) {
+		t.Fatalf("dashboard image source leaked or missing: %q", page)
+	}
+
+	adminClient := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	update := adminRequest(t, http.MethodPost, httpServer.URL+"/admin/scopes/account-1",
+		[]byte("title=Super+Mario+Odyssey"), "dashboard-token")
+	update.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err = adminClient.Do(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("dashboard update status = %d", response.StatusCode)
+	}
+
+	response, err = http.DefaultClient.Do(adminRequest(t, http.MethodGet,
+		httpServer.URL+"/admin/scopes/account-1/logo", nil, "dashboard-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "image/png" ||
+		!bytes.Equal(body, []byte{0}) {
+		t.Fatalf("logo response = status %d, type %q, body %v", response.StatusCode,
+			response.Header.Get("Content-Type"), body)
 	}
 }

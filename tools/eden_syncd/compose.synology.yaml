@@ -6,7 +6,7 @@
 
 services:
   eden-syncd:
-    image: jun9100/eden-syncd:v2026.10.21
+    image: jun9100/eden-syncd:v2026.10.21-metadata
     container_name: eden-syncd
     user: "1026:100"
     env_file:

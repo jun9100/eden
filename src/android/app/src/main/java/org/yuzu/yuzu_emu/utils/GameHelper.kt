@@ -18,6 +18,7 @@ import org.yuzu.yuzu_emu.YuzuApplication
 import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.model.GameDir
 import org.yuzu.yuzu_emu.model.MinimalDocumentFile
+import org.yuzu.yuzu_emu.save_sync.SaveSyncWorker
 import androidx.core.content.edit
 import androidx.core.net.toUri
 
@@ -26,6 +27,17 @@ object GameHelper {
     const val KEY_GAMES = "Games"
 
     var cachedGameList = mutableListOf<Game>()
+
+    fun publishSaveSyncMetadata() {
+        cachedGameList.forEach { game ->
+            val programId = game.programId.toLongOrNull() ?: return@forEach
+            runCatching { GameMetadata.getIcon(game.path) }
+                .onSuccess { icon ->
+                    NativeLibrary.setSaveSyncGameMetadata(programId, game.title, icon)
+                }
+        }
+        SaveSyncWorker.enqueue(YuzuApplication.appContext)
+    }
 
     private lateinit var preferences: SharedPreferences
 

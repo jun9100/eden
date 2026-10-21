@@ -21,14 +21,18 @@ Set the optional `EDEN_SYNCD_ADMIN_TOKEN` to enable `GET /admin/`. Open
 `http://<nas-private-ip>:<port>/admin/` from the home LAN and authenticate with
 HTTP Basic Auth: the username can be any non-empty value and the password is the
 administrator token. This must be a different secret from `EDEN_SYNCD_TOKEN`.
-The dashboard shows scope and object counts, storage usage, snapshot history,
-and lets the administrator attach a display name and HTTPS/HTTP Logo URL to
-each scope. Those labels are stored separately in `dashboard.json` and never
-alter encrypted snapshots.
+The dashboard shows scope, snapshot, and content-addressed object counts,
+including repeated object references, and lets the administrator attach a
+display name and HTTPS/HTTP Logo URL to each scope. Eden clients can publish a
+game title and icon as metadata; when that metadata is available it is shown
+automatically. Manual labels remain available for older clients or unmatched
+games. These labels are stored separately in `dashboard.json` and never alter
+encrypted snapshots. Embedded client icons are served through the authenticated
+dashboard and are not placed in the editable URL field.
 
-The sync protocol deliberately keeps scope identities opaque, so the server
-cannot derive a game name, account, or logo from a backup. Set those labels in
-the dashboard after the first snapshot appears. Keep the dashboard on the
+Repeated object references are reported for inspection only. The server never
+merges scopes or deletes snapshots automatically, because separate scopes may
+belong to different games, accounts, or devices. Keep the dashboard on the
 private LAN; do not publish it on the Internet.
 
 ## Run on a NAS

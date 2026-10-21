@@ -42,6 +42,7 @@
 
 #include "common/fs/fs.h"
 #include "common/fs/fs_paths.h"
+#include "common/hex_util.h"
 #include "common/fs/path_util.h"
 #include "common/httplib.h"
 #include "common/logging.h"
@@ -81,6 +82,11 @@ struct TrackedScope {
     std::string scope_id;
     std::string parent_snapshot_id;
     fs::path directory;
+};
+
+struct GameMetadata {
+    std::string title;
+    std::vector<u8> icon;
 };
 
 struct PendingSnapshot {
@@ -296,6 +302,17 @@ std::string HexEncode(std::span<const u8> bytes) {
         result[index * 2 + 1] = digits[bytes[index] & 0x0FU];
     }
     return result;
+}
+
+std::string Base64Encode(std::span<const u8> bytes) {
+    if (bytes.empty()) {
+        return {};
+    }
+    std::string output(4 * ((bytes.size() + 2) / 3), '\0');
+    const auto length = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(output.data()), bytes.data(),
+                                         static_cast<int>(bytes.size()));
+    output.resize(static_cast<std::size_t>(length));
+    return output;
 }
 
 std::optional<std::array<u8, HashSize>> Sha256(std::span<const u8> bytes) {
@@ -1078,6 +1095,7 @@ struct Manager::Impl {
         }
 
         const auto scope_id = HexEncode(*scope_digest);
+        PublishMetadata(*configuration, scope_id, program_id);
         {
             std::scoped_lock lock{scopes_mutex};
             if (scopes.contains(local_key)) {
@@ -1136,10 +1154,168 @@ struct Manager::Impl {
     }
 
     bool Upload() {
+        ScanExistingSaves();
         return ProcessPending();
     }
 
+    void SetGameMetadata(u64 program_id, std::string title, std::vector<u8> icon) {
+        if (program_id == 0 || title.empty()) {
+            return;
+        }
+        std::scoped_lock lock{metadata_mutex};
+        metadata.insert_or_assign(program_id,
+                                  GameMetadata{.title = std::move(title), .icon = std::move(icon)});
+    }
+
 private:
+    void PublishMetadata(const Configuration& configuration, std::string_view scope_id,
+                         u64 program_id) {
+        GameMetadata game_metadata;
+        {
+            std::scoped_lock lock{metadata_mutex};
+            const auto iterator = metadata.find(program_id);
+            if (iterator == metadata.end()) {
+                return;
+            }
+            game_metadata = iterator->second;
+        }
+        json payload{{"title", game_metadata.title}};
+        if (!game_metadata.icon.empty()) {
+            const auto encoded = Base64Encode(game_metadata.icon);
+            const auto mime = game_metadata.icon.size() >= 2 && game_metadata.icon[0] == 0xFF &&
+                                      game_metadata.icon[1] == 0xD8
+                                  ? "image/jpeg"
+                                  : "image/png";
+            payload["logo_data"] = fmt::format("data:{};base64,{}", mime, encoded);
+        }
+        httplib::Client client(configuration.endpoint);
+        ConfigureClient(client, true);
+        const auto response = client.Put(fmt::format("/v1/scopes/{}/metadata", scope_id),
+                                         RequestHeaders(configuration), payload.dump(),
+                                         "application/json");
+        if (!response || (response->status != 200 && response->status != 204)) {
+            LOG_WARNING(Core, "Save Sync could not publish metadata for scope {}", scope_id);
+        }
+    }
+
+    static bool IsHexString(std::string_view value, std::size_t length) {
+        if (value.size() != length) {
+            return false;
+        }
+        return std::all_of(value.begin(), value.end(), [](char character) {
+            return (character >= '0' && character <= '9') ||
+                   (character >= 'a' && character <= 'f') ||
+                   (character >= 'A' && character <= 'F');
+        });
+    }
+
+    static std::optional<u64> ParseHexU64(std::string_view value) {
+        if (!IsHexString(value, 16)) {
+            return std::nullopt;
+        }
+        u64 result{};
+        for (const char character : value) {
+            result <<= 4;
+            if (character >= '0' && character <= '9') {
+                result |= static_cast<u64>(character - '0');
+            } else if (character >= 'a' && character <= 'f') {
+                result |= static_cast<u64>(character - 'a' + 10);
+            } else {
+                result |= static_cast<u64>(character - 'A' + 10);
+            }
+        }
+        return result;
+    }
+
+    void ScanExistingSaves() {
+        const auto configuration = ReadConfiguration();
+        if (!configuration) {
+            return;
+        }
+
+        std::set<std::string> known_local_keys;
+        {
+            std::scoped_lock lock{scopes_mutex};
+            for (const auto& [local_key, _] : scopes) {
+                known_local_keys.insert(local_key);
+            }
+        }
+
+        const auto root = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) /
+                          "user" / "save" / "0000000000000000";
+        std::error_code error;
+        if (!fs::is_directory(root, error) || error) {
+            return;
+        }
+
+        for (const auto& user_entry : fs::directory_iterator(root, error)) {
+            if (error) {
+                return;
+            }
+            if (!user_entry.is_directory(error) || error) {
+                error.clear();
+                continue;
+            }
+            const auto user_name = user_entry.path().filename().string();
+            if (!IsHexString(user_name, 32)) {
+                continue;
+            }
+            const auto user_id_high = ParseHexU64(std::string_view{user_name}.substr(0, 16));
+            const auto user_id_low = ParseHexU64(std::string_view{user_name}.substr(16));
+            if (!user_id_high || !user_id_low) {
+                continue;
+            }
+            const u128 user_id{*user_id_low, *user_id_high};
+            const bool device_save = *user_id_high == 0 && *user_id_low == 0;
+
+            for (const auto& title_entry : fs::directory_iterator(user_entry.path(), error)) {
+                if (error) {
+                    return;
+                }
+                if (!title_entry.is_directory(error) || error) {
+                    error.clear();
+                    continue;
+                }
+                const auto title_name = title_entry.path().filename().string();
+                const auto title_id = ParseHexU64(title_name);
+                const auto empty = IsDirectoryEmpty(title_entry.path());
+                if (!title_id || !empty || *empty) {
+                    continue;
+                }
+
+                const auto relative_path = fmt::format(
+                    "/user/save/0000000000000000/{}/{}", user_name, title_name);
+                Track(FileSys::SaveDataSpaceId::User,
+                      device_save ? FileSys::SaveDataType::Device : FileSys::SaveDataType::Account,
+                      *title_id, user_id, relative_path);
+            }
+        }
+
+        std::vector<TrackedScope> initial_scopes;
+        {
+            std::scoped_lock lock{scopes_mutex};
+            for (const auto& [local_key, scope] : scopes) {
+                if (!known_local_keys.contains(local_key) && scope.parent_snapshot_id.empty() &&
+                    !LatestPendingSnapshot(scope.scope_id)) {
+                    initial_scopes.emplace_back(scope);
+                }
+            }
+            for (const auto& scope : initial_scopes) {
+                std::erase_if(scopes, [&scope](const auto& item) {
+                    return item.second.scope_id == scope.scope_id;
+                });
+            }
+        }
+        for (const auto& scope : initial_scopes) {
+            Capture(*configuration, scope);
+        }
+        if (!initial_scopes.empty()) {
+            std::scoped_lock lock{worker_mutex};
+            upload_requested = true;
+            worker_cv.notify_one();
+        }
+    }
+
     std::string KnownHead(std::string_view scope_id) {
         std::scoped_lock lock{known_heads_mutex};
         const auto heads = ReadKnownHeads();
@@ -1335,6 +1511,9 @@ private:
     std::mutex scopes_mutex;
     std::map<std::string, TrackedScope> scopes;
 
+    std::mutex metadata_mutex;
+    std::map<u64, GameMetadata> metadata;
+
     std::mutex worker_mutex;
     std::condition_variable worker_cv;
     bool stopping{};
@@ -1352,6 +1531,10 @@ Manager::~Manager() = default;
 void Manager::TrackSaveData(FileSys::SaveDataSpaceId space, FileSys::SaveDataType type,
                             u64 program_id, u128 user_id, std::string relative_path) {
     impl->Track(space, type, program_id, user_id, std::move(relative_path));
+}
+
+void Manager::SetGameMetadata(u64 program_id, std::string title, std::vector<u8> icon) {
+    impl->SetGameMetadata(program_id, std::move(title), std::move(icon));
 }
 
 void Manager::CompleteSession() {
