@@ -23,7 +23,7 @@ jobs:
           modules: qtcharts qttools
 
       - name: Install Vulkan SDK
-        uses: humbletim/install-vulkan-sdk@v1.2.2
+        uses: humbletim/install-vulkan-sdk@v1.2
         with:
           version: 1.4.304.1
           cache: true
