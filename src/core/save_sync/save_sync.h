@@ -50,6 +50,10 @@ struct RestoreSummary {
     std::size_t failed{};
 };
 
+/// Trims whitespace and a trailing slash from a server URL and repairs a scheme separator that an
+/// older desktop config writer collapsed ("http:/host" becomes "http://host").
+[[nodiscard]] std::string NormalizeEndpoint(std::string_view endpoint);
+
 /// The save folder name of a profile, which is also its cloud user ID.
 [[nodiscard]] std::string UserFolderName(const Common::UUID& uuid);
 /// The profile UUID for a save folder name, or an invalid UUID when the name is malformed.

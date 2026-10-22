@@ -324,10 +324,12 @@ std::optional<Configuration> ReadConfiguration() {
     if (endpoint[0] == '\0' || token[0] == '\0' || key[0] == '\0') {
         return std::nullopt;
     }
-    if (!IsSupportedEndpoint(endpoint, insecure_lan_enabled)) {
+    const std::string normalized_endpoint = NormalizeEndpoint(endpoint);
+    if (!IsSupportedEndpoint(normalized_endpoint, insecure_lan_enabled)) {
         LOG_ERROR(Core,
-                  "Save Sync is disabled because its server URL must use HTTPS, loopback HTTP, or "
-                  "an explicitly enabled private-LAN HTTP address");
+                  "Save Sync is disabled because its server URL \"{}\" must use HTTPS, loopback "
+                  "HTTP, or an explicitly enabled private-LAN HTTP address",
+                  normalized_endpoint);
         return std::nullopt;
     }
 
@@ -337,7 +339,8 @@ std::optional<Configuration> ReadConfiguration() {
         return std::nullopt;
     }
 
-    return Configuration{.endpoint = endpoint, .token = token, .encryption_key = *decoded_key};
+    return Configuration{
+        .endpoint = normalized_endpoint, .token = token, .encryption_key = *decoded_key};
 }
 
 std::string HexEncode(std::span<const u8> bytes) {
@@ -2354,6 +2357,27 @@ CloudCatalog Manager::FetchCloudCatalog() {
 RestoreSummary Manager::RestoreCloudUser(std::string_view cloud_user, std::string_view local_user,
                                          bool overwrite) {
     return impl->RestoreUser(cloud_user, local_user, overwrite);
+}
+
+std::string NormalizeEndpoint(std::string_view endpoint) {
+    constexpr std::string_view whitespace{" \t\r\n"};
+    const auto first = endpoint.find_first_not_of(whitespace);
+    if (first == std::string_view::npos) {
+        return {};
+    }
+    endpoint = endpoint.substr(first, endpoint.find_last_not_of(whitespace) - first + 1);
+
+    std::string result{endpoint};
+    for (const std::string_view scheme : {"http:/", "https:/"}) {
+        if (result.starts_with(scheme) && !result.starts_with(std::string{scheme} + "/")) {
+            result.insert(scheme.size(), "/");
+            break;
+        }
+    }
+    while (result.ends_with('/') && !result.ends_with("://")) {
+        result.pop_back();
+    }
+    return result;
 }
 
 std::string UserFolderName(const Common::UUID& uuid) {

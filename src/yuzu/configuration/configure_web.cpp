@@ -133,7 +133,8 @@ void ConfigureWeb::ApplyConfiguration() {
     Settings::values.eden_token = ui->edit_token->text().toStdString();
     Settings::values.save_sync_enabled = ui->toggle_save_sync->isChecked();
     Settings::values.save_sync_allow_insecure_lan = ui->toggle_save_sync_insecure_lan->isChecked();
-    Settings::values.save_sync_url = ui->edit_save_sync_url->text().toStdString();
+    Settings::values.save_sync_url =
+        Core::SaveSync::NormalizeEndpoint(ui->edit_save_sync_url->text().toStdString());
     Settings::values.save_sync_token = ui->edit_save_sync_token->text().toStdString();
     Settings::values.save_sync_key = ui->edit_save_sync_key->text().toStdString();
 }
