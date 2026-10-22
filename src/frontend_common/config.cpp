@@ -1015,7 +1015,16 @@ std::string Config::AdjustOutputString(const std::string& string) {
     // Windows requires that two forward slashes are used at the start of a path for unmapped
     // network drives so we have to watch for that here
 #ifndef __ANDROID__
-    if (string.substr(0, 2) == "//") {
+    // URLs such as the save sync server keep their scheme separator, mirroring ReadStringSetting;
+    // collapsing it would turn "http://host" into "http:/host" on every save.
+    if (const auto scheme_separator = adjusted_string.find("://");
+        scheme_separator != std::string::npos) {
+        const auto path_start = scheme_separator + 3;
+        std::string path = adjusted_string.substr(path_start);
+        boost::replace_all(path, "//", "/");
+        adjusted_string.resize(path_start);
+        adjusted_string.append(path);
+    } else if (string.substr(0, 2) == "//") {
         boost::replace_all(adjusted_string, "//", "/");
         adjusted_string.insert(0, "/");
     } else {

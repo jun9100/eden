@@ -387,6 +387,11 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         }
     }
 
+    // Upload snapshots queued by an earlier session and back up existing saves without waiting
+    // for a game to be launched. This runs on the save sync worker thread; it is requested before
+    // any startup dialog (missing keys or firmware) so that a pending prompt cannot hold it back.
+    QtCommon::system->GetSaveSyncManager().RequestBackgroundSync();
+
 #ifdef __unix__
     SetupSigInterrupts();
 #endif
@@ -460,10 +465,6 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         Core::Crypto::KeyManager::Instance().ReloadKeys();
     }
     game_list->PopulateAsync(UISettings::values.game_dirs);
-
-    // Upload snapshots queued by an earlier session and back up existing saves without waiting
-    // for a game to be launched. Runs on the save sync worker thread.
-    QtCommon::system->GetSaveSyncManager().RequestBackgroundSync();
 
     // Set up game list mode checkboxes.
     SetGameListMode(UISettings::values.game_list_mode.GetValue());
