@@ -37,6 +37,7 @@ import org.yuzu.yuzu_emu.utils.FullscreenHelper
 import androidx.core.content.edit
 import androidx.fragment.app.FragmentActivity
 import org.yuzu.yuzu_emu.fragments.MessageDialogFragment
+import org.yuzu.yuzu_emu.save_sync.SaveSyncUsersDialog
 import org.yuzu.yuzu_emu.save_sync.SaveSyncWorker
 
 class SettingsFragmentPresenter(
@@ -551,6 +552,16 @@ class SettingsFragmentPresenter(
                         }
                         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                     }
+                }
+            )
+            add(
+                RunnableSetting(
+                    titleId = R.string.save_sync_users,
+                    descriptionId = R.string.save_sync_users_description,
+                    isRunnable = syncEnabled,
+                    iconId = R.drawable.ic_account_circle
+                ) {
+                    activity?.let { SaveSyncUsersDialog.show(it) }
                 }
             )
             add(BooleanSetting.SAVE_SYNC_ENABLED.key)

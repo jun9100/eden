@@ -549,6 +549,33 @@
     <string name="save_sync_key">保险库密钥或口令</string>
     <string name="save_sync_key_description">在所有设备上输入相同的 8–128 位口令。服务器只保存密文。已有备份仍支持 64 位十六进制密钥；更换此值会创建新的同步组。</string>
     <string name="save_sync_key_error">请输入 8–128 个不含空格的字符。</string>
+    <string name="save_sync_users">云端用户</string>
+    <string name="save_sync_users_description">选择本设备使用哪个云端用户的存档，以及每个本机用户与哪个云端用户同步。</string>
+    <string name="save_sync_users_loading">正在读取云端用户…</string>
+    <string name="save_sync_users_error">无法读取云端用户。请确认已启用存档同步、服务器可以连接，并且服务器版本支持用户功能。</string>
+    <string name="save_sync_users_empty">还没有找到属于此同步密钥的云端用户。</string>
+    <string name="save_sync_users_unlabelled">有 %1$d 个云端存档由旧版 Eden 上传，等该设备运行新版本后就会显示在这里。</string>
+    <string name="save_sync_user_summary">%1$s · %2$d 个游戏 · %3$s</string>
+    <string name="save_sync_unnamed_user">未命名用户</string>
+    <string name="save_sync_local_users">本机用户</string>
+    <string name="save_sync_new_local_user">新建本机用户 %1$s</string>
+    <string name="save_sync_choose_local_user">把 %1$s 的存档下载到</string>
+    <string name="save_sync_next">下一步</string>
+    <string name="save_sync_restore_confirm">将 %1$s 的 %2$d 个游戏存档下载到 %3$s，之后该本机用户会继续与 %1$s 同步。本机已有的存档如何处理？</string>
+    <string name="save_sync_restore_keep">保留本机存档</string>
+    <string name="save_sync_restore_overwrite">覆盖本机存档</string>
+    <string name="save_sync_restoring">正在下载云端存档…</string>
+    <string name="save_sync_restore_failed">无法下载云端存档。</string>
+    <string name="save_sync_restore_done">已将 %1$d 个存档下载到 %2$s，并设为当前用户。</string>
+    <string name="save_sync_restore_skipped">保留了本机已有的 %1$d 个存档。</string>
+    <string name="save_sync_restore_some_failed">%1$d 个存档下载失败。</string>
+    <string name="save_sync_stop_game_first">请先停止正在运行的游戏，再下载云端存档。</string>
+    <string name="save_sync_cannot_create_user">无法创建本机用户。</string>
+    <string name="save_sync_link_title">%1$s 的同步对象</string>
+    <string name="save_sync_link_same_id">同 ID 的云端用户</string>
+    <string name="save_sync_link_disabled">不同步</string>
+    <string name="save_sync_link_to">云端用户 %1$s</string>
+    <string name="save_sync_link_failed">无法保存该用户的同步设置。</string>
 
     <!-- Graphics settings strings -->
     <string name="renderer_resolution">分辨率 (掌机模式/主机模式)</string>

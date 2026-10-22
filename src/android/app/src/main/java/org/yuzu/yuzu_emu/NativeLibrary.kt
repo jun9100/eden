@@ -196,6 +196,34 @@ object NativeLibrary {
 
     external fun setSaveSyncGameMetadata(programId: Long, title: String, icon: ByteArray)
 
+    /** Lists the cloud users readable with this device's sync key, as JSON. Blocks on the network. */
+    external fun getSaveSyncCloudUsers(): String
+
+    /**
+     * Links [localUser] to [cloudUser] and downloads that user's saves, returning a JSON summary.
+     * Blocks on the network. Users are identified by their save folder names.
+     */
+    external fun restoreSaveSyncCloudUser(
+        cloudUser: String,
+        localUser: String,
+        overwrite: Boolean
+    ): String
+
+    external fun getSaveSyncUserLink(localUser: String): String
+
+    external fun setSaveSyncUserLink(
+        localUser: String,
+        cloudUser: String,
+        cloudName: String,
+        enabled: Boolean
+    ): Boolean
+
+    /** Converts a profile UUID to the save folder name that identifies it in the cloud. */
+    external fun getSaveSyncUserFolder(uuid: String): String
+
+    /** Converts a save folder name back to a profile UUID, or an empty string when invalid. */
+    external fun getSaveSyncUserUuid(folder: String): String
+
     /**
      * Returns true if emulation is running (or is paused).
      */

@@ -565,6 +565,33 @@
     <string name="save_sync_key">Vault key or passphrase</string>
     <string name="save_sync_key_description">Use the same 8–128 character passphrase on every device. The server stores only ciphertext. A 64-character hexadecimal key remains supported for existing backups; changing this value creates a new sync group.</string>
     <string name="save_sync_key_error">Use 8–128 non-whitespace characters.</string>
+    <string name="save_sync_users">Cloud users</string>
+    <string name="save_sync_users_description">Choose which cloud user\'s saves to use on this device and which cloud user each local user syncs with.</string>
+    <string name="save_sync_users_loading">Loading cloud users…</string>
+    <string name="save_sync_users_error">Could not load cloud users. Check that save sync is enabled, the server is reachable and it runs a version that supports users.</string>
+    <string name="save_sync_users_empty">No cloud users were found for this sync key yet.</string>
+    <string name="save_sync_users_unlabelled">%1$d cloud saves were uploaded by an older Eden version and will appear here after that device starts a newer version.</string>
+    <string name="save_sync_user_summary">%1$s · %2$d games · %3$s</string>
+    <string name="save_sync_unnamed_user">Unnamed user</string>
+    <string name="save_sync_local_users">Local users</string>
+    <string name="save_sync_new_local_user">New local user %1$s</string>
+    <string name="save_sync_choose_local_user">Download %1$s\'s saves into</string>
+    <string name="save_sync_next">Next</string>
+    <string name="save_sync_restore_confirm">Download %2$d game saves of %1$s into %3$s. That local user keeps syncing with %1$s afterwards. What should happen to saves already on this device?</string>
+    <string name="save_sync_restore_keep">Keep local saves</string>
+    <string name="save_sync_restore_overwrite">Replace local saves</string>
+    <string name="save_sync_restoring">Downloading cloud saves…</string>
+    <string name="save_sync_restore_failed">Could not download the cloud saves.</string>
+    <string name="save_sync_restore_done">Downloaded %1$d saves into %2$s and made it the current user.</string>
+    <string name="save_sync_restore_skipped">%1$d saves already on this device were kept.</string>
+    <string name="save_sync_restore_some_failed">%1$d saves could not be downloaded.</string>
+    <string name="save_sync_stop_game_first">Stop the running game before downloading cloud saves.</string>
+    <string name="save_sync_cannot_create_user">Could not create the local user.</string>
+    <string name="save_sync_link_title">%1$s syncs with</string>
+    <string name="save_sync_link_same_id">Cloud user with the same ID</string>
+    <string name="save_sync_link_disabled">Do not sync</string>
+    <string name="save_sync_link_to">Cloud user %1$s</string>
+    <string name="save_sync_link_failed">Could not save the sync setting for this user.</string>
 
     <!-- Graphics settings strings -->
     <string name="renderer_resolution">Resolution (Handheld/Docked)</string>

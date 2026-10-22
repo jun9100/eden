@@ -5760,7 +5760,154 @@ Drag points to change position, or double-click table cells to edit values.</sou
     </message>
 </context>
 <context>
+    <name>ConfigureSaveSyncUsers</name>
+    <message>
+        <source>Cloud Users</source>
+        <translation>云端用户</translation>
+    </message>
+    <message>
+        <source>Unnamed user</source>
+        <translation>未命名用户</translation>
+    </message>
+    <message>
+        <source>Cloud saves are grouped by the user that made them. Only saves this device's vault key can decrypt are shown. Pick a cloud user to download its saves into a local user; that local user keeps syncing with it afterwards.</source>
+        <translation>云端存档按创建它们的用户分组，只显示本设备的保险库密钥能解密的存档。选择一个云端用户，把他的存档下载到本机用户；之后该本机用户会继续与这个云端用户同步。</translation>
+    </message>
+    <message>
+        <source>Cloud users</source>
+        <translation>云端用户</translation>
+    </message>
+    <message>
+        <source>User</source>
+        <translation>用户</translation>
+    </message>
+    <message>
+        <source>Games</source>
+        <translation>游戏</translation>
+    </message>
+    <message>
+        <source>Last synced</source>
+        <translation>最近同步</translation>
+    </message>
+    <message>
+        <source>Download into local user:</source>
+        <translation>下载到本机用户：</translation>
+    </message>
+    <message>
+        <source>Replace saves that already exist on this device</source>
+        <translation>覆盖本机已有的存档</translation>
+    </message>
+    <message>
+        <source>Make it the current user</source>
+        <translation>设为当前用户</translation>
+    </message>
+    <message>
+        <source>Use This Cloud User's Saves</source>
+        <translation>使用此云端用户的存档</translation>
+    </message>
+    <message>
+        <source>Local users</source>
+        <translation>本机用户</translation>
+    </message>
+    <message>
+        <source>Local user</source>
+        <translation>本机用户</translation>
+    </message>
+    <message>
+        <source>Syncs with</source>
+        <translation>同步对象</translation>
+    </message>
+    <message>
+        <source>Refresh</source>
+        <translation>刷新</translation>
+    </message>
+    <message>
+        <source>Loading cloud users…</source>
+        <translation>正在读取云端用户…</translation>
+    </message>
+    <message>
+        <source>Could not load cloud users. Check that save sync is enabled, the server is reachable and it runs a version that supports users.</source>
+        <translation>无法读取云端用户。请确认已启用存档同步、服务器可以连接，并且服务器版本支持用户功能。</translation>
+    </message>
+    <message>
+        <source>No cloud users were found for this vault key yet.</source>
+        <translation>还没有找到属于此保险库密钥的云端用户。</translation>
+    </message>
+    <message>
+        <source>Cloud user with the same ID</source>
+        <translation>同 ID 的云端用户</translation>
+    </message>
+    <message>
+        <source>Do not sync</source>
+        <translation>不同步</translation>
+    </message>
+    <message>
+        <source>Could not save the sync setting for this user.</source>
+        <translation>无法保存该用户的同步设置。</translation>
+    </message>
+    <message>
+        <source>New local user with the cloud user's ID</source>
+        <translation>新建与云端用户同 ID 的本机用户</translation>
+    </message>
+    <message>
+        <source>Stop the running game before downloading cloud saves.</source>
+        <translation>请先停止正在运行的游戏，再下载云端存档。</translation>
+    </message>
+    <message>
+        <source>No more local users can be created.</source>
+        <translation>无法再创建更多本机用户。</translation>
+    </message>
+    <message>
+        <source>Could not create the local user.</source>
+        <translation>无法创建本机用户。</translation>
+    </message>
+    <message>
+        <source>Saves of these games that already exist on this device will be replaced. Continue?</source>
+        <translation>本机已有的这些游戏存档将被覆盖（会先备份）。是否继续？</translation>
+    </message>
+    <message>
+        <source>Downloading cloud saves…</source>
+        <translation>正在下载云端存档…</translation>
+    </message>
+    <message>
+        <source>Could not download the cloud saves.</source>
+        <translation>无法下载云端存档。</translation>
+    </message>
+    <message numerus="yes">
+        <source>%n cloud save(s) were uploaded by an older Eden version and will appear here after that device starts a newer version.</source>
+        <translation>
+            <numerusform>有 %n 个云端存档由旧版 Eden 上传，等该设备运行新版本后就会显示在这里。</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>Downloaded %n save(s).</source>
+        <translation>
+            <numerusform>已下载 %n 个存档。</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>%n save(s) already on this device were kept.</source>
+        <translation>
+            <numerusform>保留了本机已有的 %n 个存档。</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>%n save(s) could not be downloaded.</source>
+        <translation>
+            <numerusform>%n 个存档下载失败。</numerusform>
+        </translation>
+    </message>
+</context>
+<context>
     <name>ConfigureWeb</name>
+    <message>
+        <source>Choose which cloud user's saves each local user syncs with.</source>
+        <translation>选择每个本机用户与哪个云端用户的存档同步。</translation>
+    </message>
+    <message>
+        <source>Cloud users…</source>
+        <translation>云端用户…</translation>
+    </message>
     <message>
         <location filename="../../src/yuzu/configuration/configure_web.ui" line="14"/>
         <source>Form</source>

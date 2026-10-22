@@ -33,6 +33,7 @@
 #include <core/file_sys/patch_manager.h>
 #include <core/file_sys/savedata_factory.h>
 #include <core/save_sync/save_sync.h>
+#include <nlohmann/json.hpp>
 #include <core/loader/nro.h>
 #include <frontend_common/content_manager.h>
 #include <jni.h>
@@ -958,6 +959,76 @@ void Java_org_yuzu_yuzu_1emu_NativeLibrary_setSaveSyncGameMetadata(JNIEnv* env, 
     }
     EmulationSession::GetInstance().System().GetSaveSyncManager().SetGameMetadata(
         static_cast<u64>(program_id), Common::Android::GetJString(env, jtitle), std::move(icon));
+}
+
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getSaveSyncCloudUsers(JNIEnv* env, jclass clazz) {
+    Core::SaveSync::Manager manager;
+    const auto catalog = manager.FetchCloudCatalog();
+    nlohmann::json users = nlohmann::json::array();
+    for (const auto& user : catalog.users) {
+        nlohmann::json games = nlohmann::json::array();
+        for (const auto& game : user.games) {
+            games.push_back({{"program_id", fmt::format("{:016X}", game.program_id)},
+                             {"title", game.title},
+                             {"updated_at", game.updated_at}});
+        }
+        users.push_back({{"id", user.user_id},
+                         {"name", user.name},
+                         {"updated_at", user.updated_at},
+                         {"games", std::move(games)}});
+    }
+    const nlohmann::json result{{"ok", catalog.succeeded},
+                                {"unlabelled", catalog.unlabelled},
+                                {"users", std::move(users)}};
+    return Common::Android::ToJString(env, result.dump());
+}
+
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_restoreSaveSyncCloudUser(JNIEnv* env, jclass clazz,
+                                                                      jstring jcloud_user,
+                                                                      jstring jlocal_user,
+                                                                      jboolean overwrite) {
+    Core::SaveSync::Manager manager;
+    const auto summary = manager.RestoreCloudUser(Common::Android::GetJString(env, jcloud_user),
+                                                  Common::Android::GetJString(env, jlocal_user),
+                                                  overwrite);
+    const nlohmann::json result{{"ok", summary.succeeded},
+                                {"restored", summary.restored},
+                                {"skipped", summary.skipped},
+                                {"failed", summary.failed}};
+    return Common::Android::ToJString(env, result.dump());
+}
+
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getSaveSyncUserLink(JNIEnv* env, jclass clazz,
+                                                                 jstring jlocal_user) {
+    const auto link = Core::SaveSync::GetUserLink(Common::Android::GetJString(env, jlocal_user));
+    const nlohmann::json result{
+        {"cloud", link.cloud_user}, {"name", link.cloud_name}, {"sync", link.enabled}};
+    return Common::Android::ToJString(env, result.dump());
+}
+
+jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_setSaveSyncUserLink(JNIEnv* env, jclass clazz,
+                                                                  jstring jlocal_user,
+                                                                  jstring jcloud_user,
+                                                                  jstring jcloud_name,
+                                                                  jboolean enabled) {
+    return Core::SaveSync::SetUserLink(
+        Common::Android::GetJString(env, jlocal_user),
+        {.cloud_user = Common::Android::GetJString(env, jcloud_user),
+         .cloud_name = Common::Android::GetJString(env, jcloud_name),
+         .enabled = enabled != JNI_FALSE});
+}
+
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getSaveSyncUserFolder(JNIEnv* env, jclass clazz,
+                                                                   jstring juuid) {
+    const Common::UUID uuid{Common::Android::GetJString(env, juuid)};
+    return Common::Android::ToJString(env, Core::SaveSync::UserFolderName(uuid));
+}
+
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getSaveSyncUserUuid(JNIEnv* env, jclass clazz,
+                                                                 jstring jfolder) {
+    const auto uuid =
+        Core::SaveSync::UserFromFolderName(Common::Android::GetJString(env, jfolder));
+    return Common::Android::ToJString(env, uuid.IsValid() ? uuid.FormattedString() : "");
 }
 
 jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_isRunning(JNIEnv* env, jclass clazz) {

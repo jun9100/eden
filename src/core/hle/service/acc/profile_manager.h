@@ -8,6 +8,9 @@
 
 #include <array>
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "common/common_funcs.h"
 #include "common/common_types.h"
@@ -110,6 +113,9 @@ public:
                                const UserData& data_new);
 
     void WriteUserSaveFile();
+
+    /// Reads the users stored in profiles.dat without creating or changing any profile.
+    static std::vector<std::pair<Common::UUID, std::string>> ReadSavedUsers();
 
     void ResetUserSaveFile();
 

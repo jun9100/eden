@@ -430,6 +430,26 @@ void ProfileManager::ParseUserSaveFile() {
                           [](const ProfileInfo& profile) { return profile.user_uuid.IsValid(); });
 }
 
+std::vector<std::pair<UUID, std::string>> ProfileManager::ReadSavedUsers() {
+    const auto save_path(FS::GetEdenPath(FS::EdenPath::NANDDir) / ACC_SAVE_AVATORS_BASE_PATH /
+                         "profiles.dat");
+    const FS::IOFile save(save_path, FS::FileAccessMode::Read, FS::FileType::BinaryFile);
+    ProfileDataRaw data;
+    if (!save.IsOpen() || !save.ReadObject(data)) {
+        return {};
+    }
+
+    std::vector<std::pair<UUID, std::string>> users;
+    for (const auto& user : data.users) {
+        if (user.uuid.IsValid()) {
+            users.emplace_back(user.uuid, Common::StringFromFixedZeroTerminatedBuffer(
+                                              reinterpret_cast<const char*>(user.username.data()),
+                                              user.username.size()));
+        }
+    }
+    return users;
+}
+
 void ProfileManager::WriteUserSaveFile() {
     if (!is_save_needed) {
         return;

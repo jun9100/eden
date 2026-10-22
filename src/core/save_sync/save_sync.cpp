@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -51,6 +52,7 @@
 #include "common/scm_rev.h"
 #include "common/settings.h"
 #include "common/zstd_compression.h"
+#include "core/hle/service/acc/profile_manager.h"
 
 namespace Core::SaveSync {
 
@@ -112,6 +114,26 @@ struct PendingSnapshot {
 struct RemoteHead {
     std::string id;
     std::string blob_id;
+};
+
+// Identifies the owner of a scope for other devices. It is encrypted with the sync key before it
+// leaves the device, so the server only ever sees an opaque blob.
+struct ScopeLabel {
+    std::string kind;
+    std::string user;
+    std::string name;
+    u64 program_id{};
+};
+
+struct CatalogEntry {
+    std::string scope_id;
+    std::string head;
+    std::string updated_at;
+    u64 size{};
+    std::string title;
+    std::string user_name;
+    bool labelled{};
+    std::optional<ScopeLabel> label;
 };
 
 enum class UploadResult {
@@ -336,6 +358,24 @@ std::string Base64Encode(std::span<const u8> bytes) {
     const auto length = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(output.data()), bytes.data(),
                                          static_cast<int>(bytes.size()));
     output.resize(static_cast<std::size_t>(length));
+    return output;
+}
+
+std::optional<std::vector<u8>> Base64Decode(std::string_view encoded) {
+    if (encoded.empty() || encoded.size() % 4 != 0) {
+        return std::nullopt;
+    }
+    std::vector<u8> output(encoded.size() / 4 * 3);
+    const auto length =
+        EVP_DecodeBlock(output.data(), reinterpret_cast<const unsigned char*>(encoded.data()),
+                        static_cast<int>(encoded.size()));
+    if (length < 0) {
+        return std::nullopt;
+    }
+    // EVP_DecodeBlock counts padding as zero bytes.
+    const auto padding = static_cast<std::size_t>(
+        std::count(encoded.end() - std::min<std::size_t>(2, encoded.size()), encoded.end(), '='));
+    output.resize(static_cast<std::size_t>(length) - padding);
     return output;
 }
 
@@ -755,6 +795,10 @@ fs::path PendingDirectory() {
 
 fs::path KnownHeadsPath() {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" / "heads.json";
+}
+
+fs::path PublishedLabelsPath() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" / "labels.json";
 }
 
 fs::path KnownContentsPath() {
@@ -1236,6 +1280,194 @@ bool RetainConflict(const PendingSnapshot& snapshot) {
     return !error;
 }
 
+std::string FolderName(const u128& user_id) {
+    return fmt::format("{:016X}{:016X}", user_id[1], user_id[0]);
+}
+
+bool IsUserFolderName(std::string_view value) {
+    return value.size() == 32 && std::ranges::all_of(value, [](const char character) {
+               return std::isxdigit(static_cast<unsigned char>(character)) != 0;
+           });
+}
+
+std::string UpperCase(std::string_view value) {
+    std::string result{value};
+    std::ranges::transform(result, result.begin(), [](const char character) {
+        return static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+    });
+    return result;
+}
+
+std::string AccountScopeKey(std::string_view user, u64 program_id) {
+    return fmt::format("account/{}/{:016X}", user, program_id);
+}
+
+fs::path UserLinksPath() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" / "users.json";
+}
+
+// Links are consulted every time a game opens a save, so they are cached and only re-read when
+// the data directory changes. Every writer goes through SetUserLink, which updates the cache.
+std::mutex user_links_mutex;
+fs::path cached_user_links_path;
+std::map<std::string, UserLink> cached_user_links;
+
+std::map<std::string, UserLink>& UserLinksLocked() {
+    const auto path = UserLinksPath();
+    if (path == cached_user_links_path) {
+        return cached_user_links;
+    }
+    cached_user_links_path = path;
+    cached_user_links.clear();
+    std::ifstream input(path);
+    if (!input) {
+        return cached_user_links;
+    }
+    try {
+        const json values = json::parse(input);
+        if (!values.is_object()) {
+            return cached_user_links;
+        }
+        for (const auto& [local_user, value] : values.items()) {
+            if (!IsUserFolderName(local_user) || !value.is_object()) {
+                continue;
+            }
+            UserLink link{
+                .cloud_user = UpperCase(value.value("cloud", std::string{})),
+                .cloud_name = value.value("name", std::string{}),
+                .enabled = value.value("sync", true),
+            };
+            if (!link.cloud_user.empty() && !IsUserFolderName(link.cloud_user)) {
+                continue;
+            }
+            cached_user_links.insert_or_assign(UpperCase(local_user), std::move(link));
+        }
+    } catch (const json::exception&) {
+        LOG_WARNING(Core, "Save Sync ignored a damaged user link file");
+    }
+    return cached_user_links;
+}
+
+std::string LocalUserName(std::string_view folder) {
+    for (const auto& [uuid, name] : Service::Account::ProfileManager::ReadSavedUsers()) {
+        if (FolderName(uuid.AsU128()) == folder) {
+            return name;
+        }
+    }
+    return {};
+}
+
+std::string LabelAssociatedData(std::string_view scope_id) {
+    // Distinct from the snapshot blobs' associated data, so a label can never pass for a save.
+    return fmt::format("label:{}", scope_id);
+}
+
+std::string SerializeLabel(const ScopeLabel& label) {
+    json value{{"v", 1}, {"kind", label.kind}, {"program", fmt::format("{:016X}", label.program_id)}};
+    if (label.kind == "account") {
+        value["user"] = label.user;
+        value["name"] = label.name;
+    }
+    return value.dump();
+}
+
+std::optional<std::string> EncryptLabel(const Configuration& configuration,
+                                        std::string_view scope_id, const ScopeLabel& label) {
+    const auto text = SerializeLabel(label);
+    const auto encrypted =
+        Encrypt(configuration, LabelAssociatedData(scope_id),
+                std::span<const u8>{reinterpret_cast<const u8*>(text.data()), text.size()});
+    if (!encrypted) {
+        return std::nullopt;
+    }
+    return Base64Encode(*encrypted);
+}
+
+std::optional<ScopeLabel> DecryptLabel(const Configuration& configuration,
+                                       std::string_view scope_id, std::string_view encoded) {
+    const auto encrypted = Base64Decode(encoded);
+    if (!encrypted) {
+        return std::nullopt;
+    }
+    // Labels written with another sync key fail authentication here and are ignored.
+    const auto plaintext = Decrypt(configuration, LabelAssociatedData(scope_id), *encrypted);
+    if (!plaintext) {
+        return std::nullopt;
+    }
+    try {
+        const auto value = json::parse(plaintext->begin(), plaintext->end());
+        ScopeLabel label{
+            .kind = value.at("kind").get<std::string>(),
+            .user = UpperCase(value.value("user", std::string{})),
+            .name = value.value("name", std::string{}),
+        };
+        const auto program = value.at("program").get<std::string>();
+        const auto [pointer, error] = std::from_chars(
+            program.data(), program.data() + program.size(), label.program_id, 16);
+        if (error != std::errc{} || pointer != program.data() + program.size()) {
+            return std::nullopt;
+        }
+        // Only trust a label that matches the scope it is attached to.
+        const auto key = label.kind == "account" && IsUserFolderName(label.user)
+                             ? AccountScopeKey(label.user, label.program_id)
+                         : label.kind == "device" ? fmt::format("device/{:016X}", label.program_id)
+                                                  : std::string{};
+        const auto digest = key.empty() ? std::nullopt : ScopeDigest(configuration, key);
+        if (!digest || HexEncode(*digest) != scope_id) {
+            return std::nullopt;
+        }
+        return label;
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::optional<std::vector<CatalogEntry>> FetchCatalogEntries(httplib::Client& client,
+                                                             const Configuration& configuration) {
+    const auto response = client.Get("/v1/scopes", RequestHeaders(configuration));
+    RecordReachability(static_cast<bool>(response));
+    if (!response) {
+        LOG_WARNING(Core, "Save Sync could not reach the server to list cloud saves");
+        return std::nullopt;
+    }
+    if (response->status != 200) {
+        LOG_WARNING(Core, "Save Sync cloud save list returned HTTP {}", response->status);
+        return std::nullopt;
+    }
+    try {
+        const auto body = json::parse(response->body);
+        std::vector<CatalogEntry> entries;
+        for (const auto& item : body.at("scopes")) {
+            CatalogEntry entry{
+                .scope_id = item.at("id").get<std::string>(),
+                .head = item.value("head", std::string{}),
+                .updated_at = item.value("updated_at", std::string{}),
+                .size = item.value("size", u64{}),
+                .title = item.value("title", std::string{}),
+                .user_name = item.value("user_name", std::string{}),
+            };
+            if (!IsLowerHex(entry.scope_id, HashSize * 2)) {
+                continue;
+            }
+            const auto descriptor = item.value("descriptor", std::string{});
+            entry.labelled = !descriptor.empty();
+            if (entry.labelled) {
+                entry.label = DecryptLabel(configuration, entry.scope_id, descriptor);
+                // A device without the profile labels the save without a name; the server keeps
+                // the last name it was given.
+                if (entry.label && entry.label->name.empty()) {
+                    entry.label->name = entry.user_name;
+                }
+            }
+            entries.push_back(std::move(entry));
+        }
+        return entries;
+    } catch (const json::exception&) {
+        LOG_WARNING(Core, "Save Sync server returned an invalid cloud save list");
+        return std::nullopt;
+    }
+}
+
 } // Anonymous namespace
 
 struct Manager::Impl {
@@ -1257,10 +1489,21 @@ struct Manager::Impl {
             return;
         }
 
-        const std::string local_key =
-            type == FileSys::SaveDataType::Account
-                ? fmt::format("account/{:016X}{:016X}/{:016X}", user_id[1], user_id[0], program_id)
-                : fmt::format("device/{:016X}", program_id);
+        // An account save syncs with the cloud user its local user is linked to, which defaults
+        // to the user with the same ID.
+        ScopeLabel label{.kind = "device", .program_id = program_id};
+        std::string local_key = fmt::format("device/{:016X}", program_id);
+        if (type == FileSys::SaveDataType::Account) {
+            const auto local_user = FolderName(user_id);
+            const auto link = GetUserLink(local_user);
+            if (!link.enabled) {
+                return;
+            }
+            label.kind = "account";
+            label.user = link.cloud_user.empty() ? local_user : link.cloud_user;
+            label.name = link.cloud_user.empty() ? std::string{} : link.cloud_name;
+            local_key = AccountScopeKey(label.user, program_id);
+        }
         // Games open their saves repeatedly on the emulation thread; everything below only needs
         // to happen the first time a scope is seen.
         {
@@ -1286,7 +1529,10 @@ struct Manager::Impl {
         }
 
         const auto scope_id = HexEncode(*scope_digest);
-        QueueMetadata(scope_id, program_id);
+        if (label.kind == "account" && label.name.empty()) {
+            label.name = LocalUserName(FolderName(user_id));
+        }
+        QueueMetadata(scope_id, std::move(label));
 
         std::string parent_snapshot_id = KnownHead(scope_id);
         const auto local_directory_is_empty = IsDirectoryEmpty(directory);
@@ -1389,6 +1635,124 @@ struct Manager::Impl {
         return succeeded;
     }
 
+    CloudCatalog FetchCatalog() {
+        CloudCatalog catalog;
+        const auto configuration = ReadConfiguration();
+        if (!configuration) {
+            return catalog;
+        }
+        const auto client = MakeClient(*configuration);
+        const auto entries = FetchCatalogEntries(*client, *configuration);
+        if (!entries) {
+            return catalog;
+        }
+        catalog.succeeded = true;
+        std::map<std::string, CloudUser> users;
+        for (const auto& entry : *entries) {
+            if (!entry.labelled) {
+                ++catalog.unlabelled;
+                continue;
+            }
+            if (!entry.label || entry.label->kind != "account") {
+                continue;
+            }
+            auto& user = users[entry.label->user];
+            user.user_id = entry.label->user;
+            // Prefer the name from the most recently updated save.
+            if (!entry.label->name.empty() &&
+                (user.name.empty() || entry.updated_at > user.updated_at)) {
+                user.name = entry.label->name;
+            }
+            user.updated_at = std::max(user.updated_at, entry.updated_at);
+            user.games.push_back(CloudGame{
+                .program_id = entry.label->program_id,
+                .title = entry.title,
+                .updated_at = entry.updated_at,
+                .size = entry.size,
+            });
+        }
+        for (auto& [_, user] : users) {
+            std::ranges::sort(user.games, [](const CloudGame& left, const CloudGame& right) {
+                return left.updated_at > right.updated_at;
+            });
+            catalog.users.push_back(std::move(user));
+        }
+        std::ranges::sort(catalog.users, [](const CloudUser& left, const CloudUser& right) {
+            return left.updated_at > right.updated_at;
+        });
+        return catalog;
+    }
+
+    RestoreSummary RestoreUser(std::string_view cloud_user_view, std::string_view local_user_view,
+                               bool overwrite) {
+        RestoreSummary summary;
+        const auto cloud_user = UpperCase(cloud_user_view);
+        const auto local_user = UpperCase(local_user_view);
+        if (!IsUserFolderName(cloud_user) || !IsUserFolderName(local_user)) {
+            return summary;
+        }
+        const auto configuration = ReadConfiguration();
+        if (!configuration) {
+            return summary;
+        }
+        const auto client = MakeClient(*configuration);
+        const auto entries = FetchCatalogEntries(*client, *configuration);
+        if (!entries) {
+            return summary;
+        }
+
+        std::vector<const CatalogEntry*> selected;
+        std::string cloud_name;
+        std::string newest;
+        for (const auto& entry : *entries) {
+            if (entry.label && entry.label->kind == "account" && entry.label->user == cloud_user) {
+                selected.push_back(&entry);
+                if (!entry.label->name.empty() && entry.updated_at >= newest) {
+                    cloud_name = entry.label->name;
+                    newest = entry.updated_at;
+                }
+            }
+        }
+        const UserLink link = cloud_user == local_user
+                                  ? UserLink{}
+                                  : UserLink{.cloud_user = cloud_user, .cloud_name = cloud_name};
+        if (!SetUserLink(local_user, link)) {
+            return summary;
+        }
+        summary.succeeded = true;
+
+        const auto root = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) / "user" /
+                          "save" / "0000000000000000" / local_user;
+        for (const auto* entry : selected) {
+            const auto destination = root / fmt::format("{:016X}", entry->label->program_id);
+            const auto empty = IsDirectoryEmpty(destination);
+            if (!empty) {
+                ++summary.failed;
+                continue;
+            }
+            if (!*empty && !overwrite) {
+                ++summary.skipped;
+                continue;
+            }
+            const auto remote_head = GetRemoteHead(*client, *configuration, entry->scope_id);
+            if (!remote_head || remote_head->id.empty()) {
+                ++summary.failed;
+                continue;
+            }
+            const auto content = RestoreRemoteSnapshot(*client, *configuration, entry->scope_id,
+                                                       *remote_head, destination, overwrite);
+            if (!content || !SetKnownHead(entry->scope_id, remote_head->id)) {
+                ++summary.failed;
+                continue;
+            }
+            SetKnownContent(entry->scope_id, *content);
+            ++summary.restored;
+        }
+        LOG_INFO(Core, "Save Sync restored {} saves of cloud user {} ({} skipped, {} failed)",
+                 summary.restored, cloud_user, summary.skipped, summary.failed);
+        return summary;
+    }
+
     void SetGameMetadata(u64 program_id, std::string title, std::vector<u8> icon) {
         if (program_id == 0 || title.empty()) {
             return;
@@ -1398,8 +1762,9 @@ struct Manager::Impl {
             std::scoped_lock lock{metadata_mutex};
             metadata.insert_or_assign(
                 program_id, GameMetadata{.title = std::move(title), .icon = std::move(icon)});
-            waiting = std::any_of(metadata_queue.begin(), metadata_queue.end(),
-                                  [program_id](const auto& item) { return item.second == program_id; });
+            waiting = std::any_of(
+                metadata_queue.begin(), metadata_queue.end(),
+                [program_id](const auto& item) { return item.second.program_id == program_id; });
         }
         if (waiting) {
             RequestWork();
@@ -1415,24 +1780,40 @@ private:
         worker_cv.notify_one();
     }
 
-    // Game titles and icons are published from the worker thread, once per scope per process, so
-    // opening a save never waits for a network round trip.
-    void QueueMetadata(const std::string& scope_id, u64 program_id) {
+    // Scope labels, game titles and icons are published from the worker thread, once per scope
+    // per process, so opening a save never waits for a network round trip. Labels are published
+    // for every scope found, including saves scanned at startup, so older uploads get labelled.
+    void QueueMetadata(const std::string& scope_id, ScopeLabel label) {
         std::scoped_lock lock{metadata_mutex};
-        if (!published_metadata.contains(scope_id)) {
-            metadata_queue.insert_or_assign(scope_id, program_id);
+        if (!published_metadata.contains(scope_id) || !published_labels.contains(scope_id)) {
+            metadata_queue.insert_or_assign(scope_id, std::move(label));
         }
     }
 
     // Returns true when a publish failed and should be retried.
     bool PublishQueuedMetadata() {
         std::scoped_lock publish_lock{publish_mutex};
-        std::vector<std::pair<std::string, GameMetadata>> ready;
+        struct ReadyScope {
+            std::string scope_id;
+            std::optional<GameMetadata> game;
+            std::optional<ScopeLabel> label;
+        };
+        std::vector<ReadyScope> ready;
         {
             std::scoped_lock lock{metadata_mutex};
-            for (const auto& [scope_id, program_id] : metadata_queue) {
-                if (const auto iterator = metadata.find(program_id); iterator != metadata.end()) {
-                    ready.emplace_back(scope_id, iterator->second);
+            for (const auto& [scope_id, label] : metadata_queue) {
+                ReadyScope item{.scope_id = scope_id};
+                if (!published_metadata.contains(scope_id)) {
+                    if (const auto iterator = metadata.find(label.program_id);
+                        iterator != metadata.end()) {
+                        item.game = iterator->second;
+                    }
+                }
+                if (!published_labels.contains(scope_id) && !labels_unsupported) {
+                    item.label = label;
+                }
+                if (item.game || item.label) {
+                    ready.push_back(std::move(item));
                 }
             }
         }
@@ -1444,34 +1825,115 @@ private:
             return false;
         }
 
+        // Labels already on the server are not sent again by later processes.
+        auto published = [&] {
+            std::scoped_lock lock{known_labels_mutex};
+            return ReadScopeMap(PublishedLabelsPath(), IsContentDigest);
+        }();
+        bool published_changed{};
         const auto client = MakeClient(*configuration);
-        for (const auto& [scope_id, game_metadata] : ready) {
-            json payload{{"title", game_metadata.title}};
-            if (!game_metadata.icon.empty()) {
-                const auto encoded = Base64Encode(game_metadata.icon);
-                const auto mime = game_metadata.icon.size() >= 2 &&
-                                          game_metadata.icon[0] == 0xFF &&
-                                          game_metadata.icon[1] == 0xD8
-                                      ? "image/jpeg"
-                                      : "image/png";
-                payload["logo_data"] = fmt::format("data:{};base64,{}", mime, encoded);
+        for (auto item : ready) {
+            std::string label_digest;
+            if (item.label) {
+                const auto text = SerializeLabel(*item.label);
+                label_digest =
+                    ContentDigest(*configuration, std::span<const u8>{
+                                                      reinterpret_cast<const u8*>(text.data()),
+                                                      text.size()})
+                        .value_or(std::string{});
+                if (!label_digest.empty() && published[item.scope_id] == label_digest) {
+                    item.label.reset();
+                    std::scoped_lock lock{metadata_mutex};
+                    published_labels.insert(item.scope_id);
+                    if (!item.game) {
+                        if (published_metadata.contains(item.scope_id)) {
+                            metadata_queue.erase(item.scope_id);
+                        }
+                        continue;
+                    }
+                }
             }
-            const auto response =
-                client->Put(fmt::format("/v1/scopes/{}/metadata", scope_id),
-                            RequestHeaders(*configuration), payload.dump(), "application/json");
+            json payload = json::object();
+            if (item.game) {
+                payload["title"] = item.game->title;
+                if (!item.game->icon.empty()) {
+                    const auto& icon = item.game->icon;
+                    const auto mime = icon.size() >= 2 && icon[0] == 0xFF && icon[1] == 0xD8
+                                          ? "image/jpeg"
+                                          : "image/png";
+                    payload["logo_data"] =
+                        fmt::format("data:{};base64,{}", mime, Base64Encode(icon));
+                }
+            }
+            bool label_sent{};
+            if (item.label) {
+                if (const auto descriptor = EncryptLabel(*configuration, item.scope_id, *item.label)) {
+                    payload["descriptor"] = *descriptor;
+                    if (!item.label->name.empty()) {
+                        payload["user_name"] = item.label->name;
+                    }
+                    label_sent = true;
+                }
+            }
+            const auto path = fmt::format("/v1/scopes/{}/metadata", item.scope_id);
+            auto response = client->Put(path, RequestHeaders(*configuration), payload.dump(),
+                                        "application/json");
             RecordReachability(static_cast<bool>(response));
             if (!response) {
                 // The server is unreachable; leave the remaining entries for the next pass.
+                if (published_changed) {
+                    std::scoped_lock lock{known_labels_mutex};
+                    (void)WriteScopeMap(PublishedLabelsPath(), published);
+                }
                 return true;
             }
-            if (response->status != 200 && response->status != 204) {
+            if (label_sent && !label_digest.empty() &&
+                (response->status == 200 || response->status == 204)) {
+                published.insert_or_assign(item.scope_id, label_digest);
+                published_changed = true;
+            }
+            if (response->status == 400 && label_sent) {
+                // Servers from before user labels reject the extra fields. Stop sending labels for
+                // this process; they are sent again once the server has been updated.
+                if (!labels_unsupported) {
+                    LOG_INFO(Core, "Save Sync server does not support user labels yet");
+                }
+                labels_unsupported = true;
+            }
+            if (response->status == 400 && label_sent && item.game) {
+                // Servers without user labels reject the extra fields; still publish the title.
+                payload.erase("descriptor");
+                payload.erase("user_name");
+                response = client->Put(path, RequestHeaders(*configuration), payload.dump(),
+                                       "application/json");
+                if (!response) {
+                    return true;
+                }
+            }
+            if (response->status != 200 && response->status != 204 &&
+                !(response->status == 400 && label_sent && !item.game)) {
                 // A rejected payload will not succeed on retry, so it is not resent every pass.
                 LOG_WARNING(Core, "Save Sync metadata for scope {} was rejected with HTTP {}",
-                            scope_id, response->status);
+                            item.scope_id, response->status);
             }
             std::scoped_lock lock{metadata_mutex};
-            metadata_queue.erase(scope_id);
-            published_metadata.insert(scope_id);
+            if (item.label) {
+                published_labels.insert(item.scope_id);
+            }
+            if (item.game) {
+                published_metadata.insert(item.scope_id);
+            }
+            if (published_metadata.contains(item.scope_id) &&
+                published_labels.contains(item.scope_id)) {
+                metadata_queue.erase(item.scope_id);
+            }
+        }
+        if (published_changed) {
+            std::scoped_lock lock{known_labels_mutex};
+            if (!WriteScopeMap(PublishedLabelsPath(), published)) {
+                // Only costs resending the labels next time.
+                LOG_WARNING(Core, "Save Sync could not persist the published label cache");
+            }
         }
         return false;
     }
@@ -1837,8 +2299,10 @@ private:
 
     std::mutex metadata_mutex;
     std::map<u64, GameMetadata> metadata;
-    std::map<std::string, u64> metadata_queue;
+    std::map<std::string, ScopeLabel> metadata_queue;
     std::set<std::string> published_metadata;
+    std::set<std::string> published_labels;
+    bool labels_unsupported{};
     std::mutex publish_mutex;
 
     std::mutex worker_mutex;
@@ -1851,6 +2315,7 @@ private:
     std::mutex pending_mutex;
     std::mutex known_heads_mutex;
     std::mutex known_contents_mutex;
+    std::mutex known_labels_mutex;
 };
 
 Manager::Manager() : impl{std::make_unique<Impl>()} {}
@@ -1880,6 +2345,98 @@ bool Manager::UploadPending() {
 
 bool Manager::DownloadLatest() {
     return impl->Download();
+}
+
+CloudCatalog Manager::FetchCloudCatalog() {
+    return impl->FetchCatalog();
+}
+
+RestoreSummary Manager::RestoreCloudUser(std::string_view cloud_user, std::string_view local_user,
+                                         bool overwrite) {
+    return impl->RestoreUser(cloud_user, local_user, overwrite);
+}
+
+std::string UserFolderName(const Common::UUID& uuid) {
+    return FolderName(uuid.AsU128());
+}
+
+Common::UUID UserFromFolderName(std::string_view folder) {
+    if (!IsUserFolderName(folder)) {
+        return Common::UUID{};
+    }
+    u64 high{};
+    u64 low{};
+    std::from_chars(folder.data(), folder.data() + 16, high, 16);
+    std::from_chars(folder.data() + 16, folder.data() + 32, low, 16);
+    const u128 value{low, high};
+    std::array<u8, 16> bytes{};
+    std::memcpy(bytes.data(), value.data(), bytes.size());
+    return Common::UUID{bytes};
+}
+
+UserLink GetUserLink(std::string_view local_user) {
+    std::scoped_lock lock{user_links_mutex};
+    const auto& links = UserLinksLocked();
+    if (const auto iterator = links.find(UpperCase(local_user)); iterator != links.end()) {
+        return iterator->second;
+    }
+    return {};
+}
+
+bool SetUserLink(std::string_view local_user_view, const UserLink& link) {
+    const auto local_user = UpperCase(local_user_view);
+    const auto cloud_user = UpperCase(link.cloud_user);
+    if (!IsUserFolderName(local_user) || (!cloud_user.empty() && !IsUserFolderName(cloud_user))) {
+        return false;
+    }
+    std::scoped_lock lock{user_links_mutex};
+    auto links = UserLinksLocked();
+    if (link.enabled && (cloud_user.empty() || cloud_user == local_user)) {
+        links.erase(local_user);
+    } else {
+        links.insert_or_assign(local_user, UserLink{.cloud_user = cloud_user == local_user
+                                                                     ? std::string{}
+                                                                     : cloud_user,
+                                                    .cloud_name = link.cloud_name,
+                                                    .enabled = link.enabled});
+    }
+
+    json values = json::object();
+    for (const auto& [user, value] : links) {
+        json entry{{"sync", value.enabled}};
+        if (!value.cloud_user.empty()) {
+            entry["cloud"] = value.cloud_user;
+            entry["name"] = value.cloud_name;
+        }
+        values[user] = std::move(entry);
+    }
+    const auto path = UserLinksPath();
+    std::error_code error;
+    fs::create_directories(path.parent_path(), error);
+    const auto temporary = path.string() + ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::trunc);
+        if (!output) {
+            return false;
+        }
+        output << values.dump();
+        output.close();
+        if (!output) {
+            return false;
+        }
+    }
+    fs::rename(temporary, path, error);
+    if (error) {
+        // Windows does not replace an existing destination during rename.
+        error.clear();
+        fs::remove(path, error);
+        fs::rename(temporary, path, error);
+        if (error) {
+            return false;
+        }
+    }
+    cached_user_links = std::move(links);
+    return true;
 }
 
 } // namespace Core::SaveSync

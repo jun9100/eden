@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -322,14 +324,22 @@ func (s *server) handlePutScopeMetadata(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid scope")
 		return
 	}
-	var metadata scopeMetadata
+	var metadata struct {
+		Title      string `json:"title"`
+		LogoURL    string `json:"logo_url"`
+		LogoData   string `json:"logo_data"`
+		UserName   string `json:"user_name"`
+		Descriptor string `json:"descriptor"`
+	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2*1024*1024))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&metadata); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
-	if len([]rune(metadata.Title)) > 120 || !validLogoData(metadata.LogoData) {
+	metadata.UserName = strings.TrimSpace(metadata.UserName)
+	if len([]rune(metadata.Title)) > 120 || !validLogoData(metadata.LogoData) ||
+		len([]rune(metadata.UserName)) > maxUserNameRunes || !validDescriptor(metadata.Descriptor) {
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
@@ -344,6 +354,12 @@ func (s *server) handlePutScopeMetadata(w http.ResponseWriter, r *http.Request) 
 		updated.LogoData = metadata.LogoData
 		updated.LogoURL = ""
 	}
+	if metadata.UserName != "" {
+		updated.UserName = metadata.UserName
+	}
+	if metadata.Descriptor != "" {
+		updated.Descriptor = metadata.Descriptor
+	}
 	if updated == current {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -356,4 +372,51 @@ func (s *server) handlePutScopeMetadata(w http.ResponseWriter, r *http.Request) 
 	}
 	s.dashboard = next
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func validDescriptor(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) > maxDescriptorBytes {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	return err == nil && len(decoded) > 0
+}
+
+// catalogEntry describes one scope to clients choosing which cloud saves to use. Clients decrypt
+// the descriptor to learn the owning user and game; scopes written by other sync keys stay opaque.
+type catalogEntry struct {
+	ID         string    `json:"id"`
+	Head       string    `json:"head"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	Size       int64     `json:"size"`
+	Title      string    `json:"title,omitempty"`
+	UserName   string    `json:"user_name,omitempty"`
+	Descriptor string    `json:"descriptor,omitempty"`
+}
+
+func (s *server) handleListScopes(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	entries := make([]catalogEntry, 0, len(s.state.Scopes))
+	for scopeID, stored := range s.state.Scopes {
+		head, ok := stored.Snapshots[stored.Head]
+		if !ok {
+			continue
+		}
+		metadata := s.dashboard.Scopes[scopeID]
+		entries = append(entries, catalogEntry{
+			ID:         scopeID,
+			Head:       stored.Head,
+			UpdatedAt:  head.CreatedAt,
+			Size:       head.Size,
+			Title:      metadata.Title,
+			UserName:   metadata.UserName,
+			Descriptor: metadata.Descriptor,
+		})
+	}
+	s.mu.Unlock()
+	sort.Slice(entries, func(left, right int) bool { return entries[left].ID < entries[right].ID })
+	writeJSON(w, http.StatusOK, map[string]any{"scopes": entries})
 }

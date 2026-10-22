@@ -19,6 +19,7 @@
 #include "common/settings.h"
 #include "core/save_sync/save_sync.h"
 #include "qt_common/config/uisettings.h"
+#include "yuzu/configuration/configure_save_sync_users.h"
 #include "ui_configure_web.h"
 
 ConfigureWeb::ConfigureWeb(QWidget* parent)
@@ -35,8 +36,8 @@ ConfigureWeb::ConfigureWeb(QWidget* parent)
 
     username_validator->setRegularExpression(QRegularExpression(user_regex));
     token_validator->setRegularExpression(QRegularExpression(token_regex));
-    save_sync_key_validator->setRegularExpression(
-        QRegularExpression(QStringLiteral("[0-9a-fA-F]{64}")));
+    // A passphrase of 8-128 non-whitespace characters, as on Android, or a legacy 64-digit hex key.
+    save_sync_key_validator->setRegularExpression(QRegularExpression(QStringLiteral("\\S{8,128}")));
 #else
     QRegExpValidator* username_validator = new QRegExpValidator(this);
     QRegExpValidator* token_validator = new QRegExpValidator(this);
@@ -44,7 +45,7 @@ ConfigureWeb::ConfigureWeb(QWidget* parent)
 
     username_validator->setRegExp(QRegExp(user_regex));
     token_validator->setRegExp(QRegExp(token_regex));
-    save_sync_key_validator->setRegExp(QRegExp(QStringLiteral("[0-9a-fA-F]{64}")));
+    save_sync_key_validator->setRegExp(QRegExp(QStringLiteral("\\S{8,128}")));
 #endif
 
     ui->edit_username->setValidator(username_validator);
@@ -57,6 +58,8 @@ ConfigureWeb::ConfigureWeb(QWidget* parent)
             &ConfigureWeb::GenerateSaveSyncKey);
     connect(ui->button_download_save_sync, &QPushButton::clicked, this,
             &ConfigureWeb::DownloadSaveSync);
+    connect(ui->button_save_sync_users, &QPushButton::clicked, this,
+            &ConfigureWeb::OpenSaveSyncUsers);
 
 #ifndef USE_DISCORD_PRESENCE
     ui->discord_group->setVisible(false);
@@ -145,6 +148,12 @@ void ConfigureWeb::DownloadSaveSync() {
         Core::SaveSync::Manager manager;
         (void)manager.DownloadLatest();
     });
+}
+
+void ConfigureWeb::OpenSaveSyncUsers() {
+    ApplyConfiguration();
+    ConfigureSaveSyncUsers dialog(this);
+    dialog.exec();
 }
 
 void ConfigureWeb::VerifyLogin() {

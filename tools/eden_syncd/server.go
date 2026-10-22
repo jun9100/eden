@@ -24,6 +24,8 @@ import (
 const (
 	defaultMaxObjectBytes int64 = 512 * 1024 * 1024
 	maxMetadataBytes            = 64 * 1024
+	maxDescriptorBytes          = 4096
+	maxUserNameRunes            = 64
 	onlineWindow                = 90 * time.Second
 )
 
@@ -113,6 +115,7 @@ func (s *server) handler() http.Handler {
 
 	mux.HandleFunc("PUT /v1/blobs/{id}", s.requireToken(s.handlePutBlob))
 	mux.HandleFunc("GET /v1/blobs/{id}", s.requireToken(s.handleGetBlob))
+	mux.HandleFunc("GET /v1/scopes", s.requireToken(s.handleListScopes))
 	mux.HandleFunc("GET /v1/scopes/{id}/head", s.requireToken(s.handleGetHead))
 	mux.HandleFunc("PUT /v1/scopes/{id}/snapshots/{snapshot}", s.requireToken(s.handlePutSnapshot))
 	mux.HandleFunc("PUT /v1/scopes/{id}/metadata", s.requireToken(s.handlePutScopeMetadata))

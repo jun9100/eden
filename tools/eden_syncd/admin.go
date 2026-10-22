@@ -89,6 +89,7 @@ func decodeAdminJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 type scopeSummary struct {
 	ID            string    `json:"id"`
 	Title         string    `json:"title"`
+	User          string    `json:"user,omitempty"`
 	Named         bool      `json:"named"`
 	Logo          string    `json:"logo,omitempty"`
 	LogoURL       string    `json:"logo_url,omitempty"`
@@ -171,6 +172,7 @@ func (s *server) summarizeScopeLocked(scopeID string, stored scope) scopeSummary
 	summary := scopeSummary{
 		ID:            scopeID,
 		Title:         metadata.Title,
+		User:          metadata.UserName,
 		Named:         metadata.Title != "",
 		LogoURL:       metadata.LogoURL,
 		HasClientLogo: metadata.LogoData != "",

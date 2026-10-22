@@ -16,6 +16,7 @@ const store = {
   savesQuery: "",
   savesSort: "recent",
   savesFilter: "all",
+  savesUser: "",
   activityFilter: "all",
   pruneReport: null,
   verifyReport: null,
@@ -390,7 +391,9 @@ function renderSaves() {
   let items = scopes.filter((scope) => {
     if (store.savesFilter === "unnamed" && scope.named) return false;
     if (store.savesFilter === "pinned" && !scope.pinned_count) return false;
-    return !query || scope.id.toLowerCase().includes(query) || (scope.title || "").toLowerCase().includes(query);
+    if (store.savesUser === "-" ? scope.user : store.savesUser && scope.user !== store.savesUser) return false;
+    return !query || scope.id.toLowerCase().includes(query) || (scope.title || "").toLowerCase().includes(query) ||
+      (scope.user || "").toLowerCase().includes(query);
   });
   const sorters = {
     recent: (a, b) => new Date(b.latest_at) - new Date(a.latest_at),
@@ -400,6 +403,8 @@ function renderSaves() {
   };
   items = items.slice().sort(sorters[store.savesSort]);
   const unnamed = scopes.filter((s) => !s.named).length;
+  const users = [...new Set(scopes.map((s) => s.user).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const unlabelled = scopes.some((s) => !s.user);
 
   main.innerHTML = `
     ${pageHead("存档", `${scopes.length} 个存档范围 · 每个范围对应一个游戏账号存档或设备存档`)}
@@ -410,6 +415,10 @@ function renderSaves() {
         <button class="chip ${store.savesFilter === "unnamed" ? "active" : ""}" data-filter="unnamed">待命名${unnamed ? ` ${unnamed}` : ""}</button>
         <button class="chip ${store.savesFilter === "pinned" ? "active" : ""}" data-filter="pinned">含固定快照</button>
       </div>
+      ${users.length ? `<select id="saves-user" aria-label="用户">
+        <option value="">全部用户</option>${users.map((user) => `<option value="${esc(user)}">${esc(user)}</option>`).join("")}
+        ${unlabelled ? `<option value="-">未标记用户</option>` : ""}
+      </select>` : ""}
       <select id="saves-sort" aria-label="排序">
         <option value="recent">最近同步</option><option value="name">名称</option>
         <option value="size">占用空间</option><option value="count">快照数量</option>
@@ -420,6 +429,11 @@ function renderSaves() {
         scopes.length ? "尝试其他关键词或筛选条件。" : "在 Eden 中启用存档同步并关闭一次游戏后，存档会出现在这里。")}</div>`}</section>`;
 
   $("#saves-sort").value = store.savesSort;
+  const userSelect = $("#saves-user");
+  if (userSelect) {
+    userSelect.value = store.savesUser;
+    userSelect.onchange = (event) => { store.savesUser = event.target.value; renderSaves(); };
+  }
   $("#saves-sort").onchange = (event) => { store.savesSort = event.target.value; renderSaves(); };
   const search = $("#saves-search");
   search.oninput = () => {
@@ -440,6 +454,7 @@ function saveCard(scope) {
     <div class="save-top">${cover(scope)}
       <div class="save-title"><strong>${esc(scope.title || "未命名存档")}</strong>
         ${scope.named ? "" : `<span class="badge warn">待命名</span>`}
+        ${scope.user ? `<span class="save-user">${icon("user")}${esc(scope.user)}</span>` : ""}
         <code title="${esc(scope.id)}">${esc(scope.id)}</code></div></div>
     <div class="save-stats">
       <div><span>最近同步</span><b title="${esc(absTime(scope.latest_at))}">${esc(relTime(scope.latest_at))}</b></div>
@@ -471,6 +486,7 @@ async function renderScope(id) {
       </div>
       <div class="hero-stats">
         <div><span>当前版本</span><b title="${esc(absTime(scope.latest_at))}">${esc(relTime(scope.latest_at))}</b></div>
+        ${scope.user ? `<div><span>用户</span><b>${esc(scope.user)}</b></div>` : ""}
         <div><span>来自设备</span><b>${esc(deviceName(scope.latest_device))}</b></div>
         <div><span>快照</span><b>${scope.snapshot_count}${scope.pinned_count ? `（固定 ${scope.pinned_count}）` : ""}</b></div>
         <div><span>占用空间</span><b>${formatBytes(scope.stored_bytes)}</b></div>

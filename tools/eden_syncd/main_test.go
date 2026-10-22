@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -875,5 +876,81 @@ func TestMetricsExposeCounts(t *testing.T) {
 	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("eden_syncd_snapshots 1")) ||
 		!bytes.Contains(body, []byte("eden_syncd_stored_bytes 6")) {
 		t.Fatalf("metrics = %d %s", response.StatusCode, body)
+	}
+}
+
+func TestScopeCatalogListsLabelledScopes(t *testing.T) {
+	dataDir := t.TempDir()
+	_, httpServer := newAdminTestServer(t, dataDir)
+	defer httpServer.Close()
+
+	object := putObject(t, httpServer.URL, []byte("catalog snapshot"))
+	for _, scopeID := range []string{"account-1", "account-2"} {
+		if status := commitSnapshot(t, httpServer.URL, scopeID,
+			snapshot{ID: scopeID + "-snapshot", Blob: object, CreatedAt: time.Now().UTC()}, "", ""); status != http.StatusCreated {
+			t.Fatalf("snapshot status = %d", status)
+		}
+	}
+
+	publish := func(scopeID, body string) int {
+		request := authorizedRequest(t, http.MethodPut, httpServer.URL+"/v1/scopes/"+scopeID+"/metadata", []byte(body))
+		request.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		return response.StatusCode
+	}
+	if status := publish("account-1", `{"user_name":"Ron","descriptor":"ZW5jcnlwdGVk"}`); status != http.StatusNoContent {
+		t.Fatalf("descriptor publish status = %d", status)
+	}
+	// A later title-only publish must not clear the label.
+	if status := publish("account-1", `{"title":"Zelda"}`); status != http.StatusNoContent {
+		t.Fatalf("title publish status = %d", status)
+	}
+	if status := publish("account-2", `{"descriptor":"not base64!"}`); status != http.StatusBadRequest {
+		t.Fatalf("invalid descriptor status = %d", status)
+	}
+	if status := publish("account-2", `{"user_name":"`+strings.Repeat("x", 65)+`"}`); status != http.StatusBadRequest {
+		t.Fatalf("long user name status = %d", status)
+	}
+
+	response, err := http.DefaultClient.Do(authorizedRequest(t, http.MethodGet, httpServer.URL+"/v1/scopes", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("catalog status = %d", response.StatusCode)
+	}
+	var catalog struct {
+		Scopes []catalogEntry `json:"scopes"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Scopes) != 2 {
+		t.Fatalf("catalog = %+v", catalog.Scopes)
+	}
+	first := catalog.Scopes[0]
+	if first.ID != "account-1" || first.Head != "account-1-snapshot" || first.Title != "Zelda" ||
+		first.UserName != "Ron" || first.Descriptor != "ZW5jcnlwdGVk" || first.Size == 0 {
+		t.Fatalf("labelled entry = %+v", first)
+	}
+	if second := catalog.Scopes[1]; second.Descriptor != "" || second.UserName != "" {
+		t.Fatalf("unlabelled entry = %+v", second)
+	}
+	if overview := fetchOverview(t, httpServer.URL); overview.Scopes[0].User == "" && overview.Scopes[1].User == "" {
+		t.Fatalf("overview should expose the user name, got %+v", overview.Scopes)
+	}
+
+	unauthorized, err := http.Get(httpServer.URL + "/v1/scopes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("catalog without token status = %d", unauthorized.StatusCode)
 	}
 }

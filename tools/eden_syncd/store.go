@@ -45,6 +45,11 @@ type scopeMetadata struct {
 	Title    string `json:"title,omitempty"`
 	LogoURL  string `json:"logo_url,omitempty"`
 	LogoData string `json:"logo_data,omitempty"`
+	// UserName is the display name of the Eden user that owns an account save. Descriptor is an
+	// opaque label encrypted by clients with their sync key; it tells other devices which user and
+	// game a scope belongs to without revealing that to the server.
+	UserName   string `json:"user_name,omitempty"`
+	Descriptor string `json:"descriptor,omitempty"`
 }
 
 type deviceInfo struct {
