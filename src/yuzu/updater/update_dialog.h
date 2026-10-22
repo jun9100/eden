@@ -25,4 +25,5 @@ private:
     Ui::UpdateDialog* ui;
     QList<QRadioButton*> m_buttons;
     Common::Net::Asset m_asset;
+    std::string m_release_url;
 };

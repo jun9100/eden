@@ -18,12 +18,22 @@ jobs:
       - name: Install shader tools
         run: brew install glslang
 
+      - name: Stamp release version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        # Tagged builds report the tag as their version so the updater can compare it with
+        # the latest GitHub release.
+        run: |
+          printf '%s' "${GITHUB_REF_NAME}" > GIT-TAG
+          printf '%s' "${GITHUB_REF_NAME}" > GIT-RELEASE
+
       - name: Configure Release build
         run: >-
           cmake -S . -B build-macos -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DYUZU_TESTS=OFF
           -DENABLE_QT_TRANSLATION=ON
+          -DENABLE_UPDATE_CHECKER=ON
           -DENABLE_WERROR=OFF
           -DYUZU_USE_BUNDLED_QT=ON
 
