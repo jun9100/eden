@@ -170,12 +170,24 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
         applyFullscreenPreference()
     }
 
-    private fun checkForUpdates() {
+    /**
+     * Checks GitHub for a newer release. A [manual] check also reports when Eden is up to date.
+     */
+    fun checkForUpdates(manual: Boolean = false) {
+        if (manual) {
+            Toast.makeText(this, R.string.checking_for_updates, Toast.LENGTH_SHORT).show()
+        }
         Thread {
             val latestVersion = NativeLibrary.checkForUpdate()
-            if (latestVersion != null) {
-                runOnUiThread {
+            runOnUiThread {
+                if (latestVersion != null) {
                     showUpdateDialog(latestVersion)
+                } else if (manual) {
+                    Toast.makeText(
+                        this,
+                        getString(R.string.no_update_available, NativeLibrary.getBuildVersion()),
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
         }.start()

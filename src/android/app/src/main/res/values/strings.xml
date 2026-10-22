@@ -241,6 +241,10 @@
     <string name="downloading_update">Downloading Update</string>
     <string name="update_download_failed">Failed to download update</string>
     <string name="update_installed_successfully">Update installed successfully</string>
+    <string name="check_for_updates">Check for updates</string>
+    <string name="check_for_updates_description">Download and install the latest release from GitHub</string>
+    <string name="checking_for_updates">Checking for updates…</string>
+    <string name="no_update_available">You are running the latest version (%1$s)</string>
     <string name="update_install_failed">Failed to install update: %1$s</string>
     <string name="home_search">Search</string>
     <string name="home_settings">Settings</string>

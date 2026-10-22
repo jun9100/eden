@@ -48,10 +48,23 @@ std::vector<Asset> Release::GetPlatformAssets() const {
                     const std::string_view filename =
                         (pos != std::string_view::npos) ? asset_sv.substr(pos + 1) : asset_sv;
 
+                    // GitHub reports absolute download URLs, which may live on another host
+                    // than the API; split them so callers can open a client for that host.
+                    std::string url = host;
+                    std::string path = asset;
+                    if (const size_t scheme = asset_sv.find("://");
+                        scheme != std::string_view::npos) {
+                        const size_t path_start = asset_sv.find('/', scheme + 3);
+                        if (path_start != std::string_view::npos) {
+                            url = asset.substr(0, path_start);
+                            path = asset.substr(path_start);
+                        }
+                    }
+
                     found_assets.emplace_back(Asset{
                         .name = name,
-                        .url = host,
-                        .path = asset,
+                        .url = std::move(url),
+                        .path = std::move(path),
                         .filename = std::string{filename},
                     });
                     return;
@@ -63,7 +76,8 @@ std::vector<Asset> Release::GetPlatformAssets() const {
 #ifdef _WIN32
 #ifdef ARCHITECTURE_x86_64
 #ifdef _MSC_VER
-    find_asset("Standard", {"amd64-msvc-standard.exe", "amd64-msvc-standard.zip"});
+    find_asset("Standard", {"windows-x64-release.zip", "amd64-msvc-standard.exe",
+                            "amd64-msvc-standard.zip"});
 #else // _MSC_VER
     find_asset("Standard", {BUILD_ID "-gcc-standard.exe", BUILD_ID "-gcc-standard.zip"});
     find_asset("PGO", {BUILD_ID "-clang-pgo.exe", BUILD_ID "-clang-pgo.zip"});
@@ -74,7 +88,8 @@ std::vector<Asset> Release::GetPlatformAssets() const {
 #endif // ARCHITECTURE_arm64
 #elif defined(__APPLE__)
 #ifdef ARCHITECTURE_arm64
-    find_asset("Standard", {"standard.dmg", "standard.tar.gz", ".dmg", ".tar.gz"});
+    find_asset("Standard",
+               {"macos-arm64.zip", "standard.dmg", "standard.tar.gz", ".dmg", ".tar.gz"});
     find_asset("PGO", {"pgo.dmg", "pgo.tar.gz"});
 #endif // ARCHITECTURE_arm64
 #elif defined(__ANDROID__)
@@ -86,7 +101,7 @@ std::vector<Asset> Release::GetPlatformAssets() const {
 #elif defined(GENSHIN_SPOOF)
     find_asset("Standard", {"optimized.apk"});
 #else
-    find_asset("Standard", {"standard.apk"});
+    find_asset("Standard", {"android-arm64-release.apk", "standard.apk"});
 #endif // GENSHIN_SPOOF
 #endif // ARCHITECTURE_arm64
 #endif // __APPLE__

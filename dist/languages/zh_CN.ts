@@ -6932,6 +6932,18 @@ Debug Message: </source>
 <context>
     <name>MainWindow</name>
     <message>
+        <source>Check for &amp;Updates...</source>
+        <translation>检查更新(&amp;U)...</translation>
+    </message>
+    <message>
+        <source>Check for Updates</source>
+        <translation>检查更新</translation>
+    </message>
+    <message>
+        <source>You are running the latest version of Eden (%1).</source>
+        <translation>当前已是最新版本的 Eden（%1）。</translation>
+    </message>
+    <message>
         <location filename="../../src/yuzu/main.ui" line="14"/>
         <source>yuzu</source>
         <translation>yuzu</translation>
@@ -10689,6 +10701,34 @@ By selecting &quot;From Eden&quot;, previous save data stored in Ryujinx will be
 </context>
 <context>
     <name>UpdateDialog</name>
+    <message>
+        <source>&lt;a href=&quot;%1&quot;&gt;View release notes&lt;/a&gt;</source>
+        <translation>&lt;a href=&quot;%1&quot;&gt;查看更新说明&lt;/a&gt;</translation>
+    </message>
+    <message>
+        <source>Cannot Install Update</source>
+        <translation>无法安装更新</translation>
+    </message>
+    <message>
+        <source>Eden cannot replace its own files in %1. Move Eden to a folder you can write to, or download the update from the release page.</source>
+        <translation>Eden 无法替换 %1 中的文件。请将 Eden 移动到有写入权限的文件夹，或从发布页面手动下载更新。</translation>
+    </message>
+    <message>
+        <source>The update was downloaded to %1, but the installer could not be started.</source>
+        <translation>更新已下载到 %1，但无法启动安装程序。</translation>
+    </message>
+    <message>
+        <source>Installing Update</source>
+        <translation>正在安装更新</translation>
+    </message>
+    <message>
+        <source>Eden will now close. The update is installed automatically and Eden restarts when it is done.</source>
+        <translation>Eden 即将关闭。更新会自动安装，完成后 Eden 将重新启动。</translation>
+    </message>
+    <message>
+        <source>Could not download from %1%2</source>
+        <translation>无法从 %1%2 下载</translation>
+    </message>
     <message>
         <location filename="../../src/yuzu/updater/update_dialog.ui" line="14"/>
         <source>Update Available</source>

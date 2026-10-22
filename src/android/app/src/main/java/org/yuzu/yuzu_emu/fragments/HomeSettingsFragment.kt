@@ -108,6 +108,16 @@ class HomeSettingsFragment : Fragment() {
                     }
                 )
             )
+            if (NativeLibrary.isUpdateCheckerEnabled()) {
+                add(
+                    HomeSetting(
+                        R.string.check_for_updates,
+                        R.string.check_for_updates_description,
+                        R.drawable.ic_system_update_alt,
+                        { (requireActivity() as MainActivity).checkForUpdates(manual = true) }
+                    )
+                )
+            }
             add(
                 HomeSetting(
                     R.string.app_settings,

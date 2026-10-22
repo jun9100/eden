@@ -39,8 +39,17 @@ set(BUILD_AUTO_UPDATE_STABLE_REPO "eden-emu/eden")
 set(BUILD_AUTO_UPDATE_STABLE_API "git.eden-emu.dev")
 set(BUILD_AUTO_UPDATE_STABLE_API_PATH "/api/v1/repos/")
 
+# GitHub repository whose releases the built-in updater follows.
+set(EDEN_UPDATE_REPO "jun9100/eden" CACHE STRING "GitHub owner/repo checked by the updater")
+
 set(BUILD_AUTO_UPDATE_API_PATH "/latest/release.json")
-if (NIGHTLY_BUILD)
+if (NOT NIGHTLY_BUILD AND EDEN_UPDATE_REPO)
+    set(BUILD_AUTO_UPDATE_WEBSITE "https://github.com")
+    set(BUILD_AUTO_UPDATE_API "api.github.com")
+    set(BUILD_AUTO_UPDATE_API_PATH "/repos/${EDEN_UPDATE_REPO}/releases/latest")
+    set(BUILD_AUTO_UPDATE_REPO "${EDEN_UPDATE_REPO}")
+    set(REPO_NAME "Eden")
+elseif (NIGHTLY_BUILD)
     set(BUILD_AUTO_UPDATE_WEBSITE "https://git.eden-emu.dev")
     set(BUILD_AUTO_UPDATE_API "nightly.eden-emu.dev")
     set(BUILD_AUTO_UPDATE_REPO "eden-ci/nightly")

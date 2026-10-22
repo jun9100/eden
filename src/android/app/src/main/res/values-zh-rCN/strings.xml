@@ -234,6 +234,10 @@
     <string name="downloading_update">正在下载更新</string>
     <string name="update_download_failed">下载更新失败</string>
     <string name="update_installed_successfully">已成功安装更新</string>
+    <string name="check_for_updates">检查更新</string>
+    <string name="check_for_updates_description">从 GitHub 下载并安装最新版本</string>
+    <string name="checking_for_updates">正在检查更新…</string>
+    <string name="no_update_available">已是最新版本（%1$s）</string>
     <string name="update_install_failed">安装更新失败: %1$s</string>
     <string name="home_search">搜索</string>
     <string name="home_settings">设置</string>

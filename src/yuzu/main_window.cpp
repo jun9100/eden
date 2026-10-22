@@ -439,11 +439,11 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     show();
 
 #ifdef ENABLE_UPDATE_CHECKER
+    update_watcher.connect(&update_watcher, &QFutureWatcher<QString>::finished, this,
+                           &MainWindow::OnEmulatorUpdateAvailable);
     if (UISettings::values.check_for_updates) {
         update_future = QtConcurrent::run(
             []() -> std::optional<Common::Net::Release> { return UpdateChecker::GetUpdate(); });
-        update_watcher.connect(&update_watcher, &QFutureWatcher<QString>::finished, this,
-                               &MainWindow::OnEmulatorUpdateAvailable);
         update_watcher.setFuture(update_future);
     }
 #endif
@@ -1625,6 +1625,11 @@ void MainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Firmware_From_ZIP, &MainWindow::OnInstallFirmwareFromZIP);
     connect_menu(ui->action_Install_Keys, &MainWindow::OnInstallDecryptionKeys);
     connect_menu(ui->action_About, &MainWindow::OnAbout);
+#ifdef ENABLE_UPDATE_CHECKER
+    connect_menu(ui->action_Check_For_Updates, &MainWindow::OnCheckForUpdates);
+#else
+    ui->action_Check_For_Updates->setVisible(false);
+#endif
     connect_menu(ui->action_Eden_Dependencies, &MainWindow::OnEdenDependencies);
     connect_menu(ui->action_Data_Manager, &MainWindow::OnDataDialog);
 }
@@ -4045,12 +4050,30 @@ void MainWindow::OnCaptureScreenshot() {
 
 #ifdef ENABLE_UPDATE_CHECKER
 void MainWindow::OnEmulatorUpdateAvailable() {
+    const bool manual = std::exchange(manual_update_check, false);
     std::optional<Common::Net::Release> version = update_future.result();
-    if (!version)
+    if (!version) {
+        if (manual) {
+            QMessageBox::information(
+                this, tr("Check for Updates"),
+                tr("You are running the latest version of Eden (%1).")
+                    .arg(QString::fromUtf8(Common::g_build_version)));
+        }
         return;
+    }
 
     UpdateDialog dialog(version.value(), this);
     dialog.exec();
+}
+
+void MainWindow::OnCheckForUpdates() {
+    if (update_future.isRunning()) {
+        return;
+    }
+    manual_update_check = true;
+    update_future = QtConcurrent::run(
+        []() -> std::optional<Common::Net::Release> { return UpdateChecker::GetUpdate(); });
+    update_watcher.setFuture(update_future);
 }
 #endif
 

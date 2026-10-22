@@ -236,6 +236,7 @@
     <addaction name="action_Open_Mods_Page"/>
     <addaction name="action_Open_UserHandbook"/>
     <addaction name="separator"/>
+    <addaction name="action_Check_For_Updates"/>
     <addaction name="action_About"/>
     <addaction name="action_Eden_Dependencies"/>
    </widget>
@@ -293,6 +294,14 @@
   <action name="action_About">
    <property name="text">
     <string>&amp;About Eden</string>
+   </property>
+  </action>
+  <action name="action_Check_For_Updates">
+   <property name="text">
+    <string>Check for &amp;Updates...</string>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
    </property>
   </action>
   <action name="action_Single_Window_Mode">
