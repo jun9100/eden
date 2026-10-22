@@ -1,5 +1,5 @@
 <!--
-# SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # SPDX-FileCopyrightText: 2018 yuzu Emulator Project
@@ -8,83 +8,88 @@
 <!-- lang: en-GB -->
 
 <h1 align="center">
+  <a href="https://github.com/jun9100/eden">
+    <img src="./dist/qt_themes/default/icons/256x256/eden.png" alt="Eden" width="160">
+  </a>
   <br>
-  <a href="https://git.eden-emu.dev/eden-emu/eden"><img src="./dist/qt_themes/default/icons/256x256/eden.png" alt="Eden" width="200"></a>
-  <br>
-  <b>Eden</b>
-  <br>
+  Eden
 </h1>
 
-<h4 align="center"><b>Eden</b> is a free and open-source (FOSS) Switch 1 emulator started by developer Camille LaVey.
-<br>
-Written in C++, with builds for Windows, Linux, macOS, Android, FreeBSD and more.
-</h4>
-
 <p align="center">
-    </a>
-    <a href="https://discord.gg/HstXbPch7X">
-        <img src="https://img.shields.io/discord/1367654015269339267?color=5865F2&label=Eden&logo=discord&logoColor=white"
-            alt="Discord">
-    </a>
-    <a href="https://stt.gg/qKgFEAbH">
-        <img src="https://img.shields.io/revolt/invite/qKgFEAbH?color=d61f3a&label=Stoat"
-            alt="Stoat">
-    </a>
+  Free and open-source Nintendo Switch emulator written in C++20.
+  <br>
+  <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
-  <a href="#compatibility">Compatibility</a> |
-  <a href="#development">Development</a> |
+  <a href="#features">Features</a> |
+  <a href="#platforms">Platforms</a> |
   <a href="#building">Building</a> |
-  <a href="#download">Download</a> |
-  <a href="#support">Support</a> |
+  <a href="#documentation">Documentation</a> |
+  <a href="#contributing">Contributing</a> |
   <a href="#license">License</a>
 </p>
 
-## Compatibility
+## Features
 
-The emulator is capable of running most commercial games at full speed, provided you meet the necessary hardware requirements.
+- Qt 6 desktop application, Android application, and the `eden-cli` command-line frontend.
+- Vulkan renderer across supported targets; OpenGL is available on compatible desktop builds.
+- Core emulation, audio, input, shader recompilation, mod management, firmware management, save data, and multiplayer-room components are maintained in separate modules.
+- Optional desktop facilities include a standalone `eden-room` server, update checking, camera/web applet integration, and ReShade FX post-processing.
+- CMake downloads or discovers dependencies through CPM, with options for bundled Qt, FFmpeg, SDL3, MoltenVK, and OpenSSL where applicable.
 
-A list of supported games will be available in future. Please be patient.
+## Platforms
 
-Check out our [website](https://eden-emu.dev) for the latest news on exciting features, monthly progress reports, and more!
+The primary development and test targets are Windows, Linux, macOS, and Android. The project also contains platform support for FreeBSD, OpenBSD, NetBSD, Haiku, and OpenIndiana/Solaris.
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/eden-emulator.svg)](https://repology.org/project/eden-emulator/versions)
+| Target | Architectures | Notes |
+| --- | --- | --- |
+| Windows 10/11 | x86_64; ARM64 experimental | Desktop Qt frontend and CLI |
+| Linux | x86_64; ARM64 experimental; riscv64 limited | Desktop Qt frontend and CLI |
+| macOS | Apple silicon; Intel builds are less tested | Uses MoltenVK for Vulkan |
+| Android | ARM64 | Native Android frontend |
+| Other Unix-like systems | Varies by platform | See the platform notes before building |
 
-## Contribute
-
-To contribute to Eden; be it financially, code, bug reports, or otherwise, see our [Contributing guidelines](./CONTRIBUTING.md).
-
-## Documentation
-
-We have a user manual! See our [User Handbook](./docs/user/README.md).
+For caveats, GPU guidance, and the precise support status of each architecture, see [Platforms and Architectures](docs/user/Architectures.md).
 
 ## Building
 
-See the [General Build Guide](docs/Build.md)
+Eden uses CMake 3.31 or newer and C++20. Desktop builds require the dependencies for the selected platform; the complete requirements are in the [dependency guide](docs/Deps.md).
 
-For information on provided development tooling, see the [Tools directory](./tools)
+```sh
+git clone https://github.com/jun9100/eden.git
+cd eden
 
-## Download
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DYUZU_TESTS=OFF
+cmake --build build
+```
 
-You can download the latest releases from [our release page](https://git.eden-emu.dev/eden-emu/eden/releases).
+The desktop executable is written to `build/bin/eden` (`eden.exe` on Windows, or `eden.app` on macOS). To build only the command-line frontend on a non-Android target, disable the Qt frontend:
 
-Save us some bandwidth! We have [mirrors available](./docs/user/ThirdParty.md#mirrors) as well.
+```sh
+cmake -S . -B build-cli -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_QT=OFF
+cmake --build build-cli
+```
+
+This produces `eden-cli` in `build-cli/bin`. Android is built through the Gradle project in `src/android`; follow the [Android build guide](docs/build/Android.md).
+
+The [general build guide](docs/Build.md) covers Qt Creator, Visual Studio, CLion, build options, troubleshooting, and platform-specific details.
+
+## Documentation
+
+- [User Handbook](docs/user/README.md): setup, settings, controllers, graphics, mods, saves, updates/DLC, and multiplayer.
+- [Quickstart](docs/user/QuickStart.md): first-run guidance for Windows, Steam Deck, and macOS.
+- [Command-line reference](docs/user/CommandLine.md): using `eden-cli`.
+- [Developer tools](tools/README.md): translation, shader, and supporting development tooling.
+
+## Contributing
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or submitting a patch. It covers contribution routes, code policy, translations, and the expected build verification.
 
 ## License
 
-Eden is licensed under the GPLv3 (or any later version). Refer to the [LICENSE.txt](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/LICENSE.txt) file.
+Eden is licensed under the [GNU General Public License, version 3 or later](LICENSE.txt).
 
-## Special thanks
+## Acknowledgements
 
-Super special thanks to Cloudflare for preventing the git server from blowing up.
-
-- Yuzu
-- Ryujinx
-- Sudachi
-- Citron
-- Torzu
-- Suyu
-- Ryubing
-
-And everyone who continues or had contributed to the project! <3
+Eden builds on the work of the yuzu project and incorporates contributions from the wider emulator and open-source communities.
