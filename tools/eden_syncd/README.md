@@ -9,11 +9,15 @@ scope's snapshot head, so concurrent saves are reported as conflicts instead of 
 ```sh
 export EDEN_SYNCD_TOKEN='replace-with-a-long-random-token'
 export EDEN_SYNCD_ADMIN_TOKEN='a-different-long-random-token'
+export EDEN_SYNCD_OPENSAVE_USERNAME='opensave'
+export EDEN_SYNCD_OPENSAVE_PASSWORD='a-third-long-random-secret'
 go run . --data-dir ./data --listen 127.0.0.1:8787
 ```
 
 The health endpoint is unauthenticated at `GET /healthz`. All `/v1` endpoints require
-`Authorization: Bearer <token>`.
+`Authorization: Bearer <token>`. When both `EDEN_SYNCD_OPENSAVE_USERNAME` and
+`EDEN_SYNCD_OPENSAVE_PASSWORD` are set, OpenSave clients can use standard WebDAV at
+`http://127.0.0.1:8787/opensave` with those Basic Auth credentials.
 
 ## Administrator dashboard
 
@@ -63,6 +67,8 @@ collected, so in-flight client uploads are safe. Initial values come from
 | --- | --- | --- |
 | `--token` | `EDEN_SYNCD_TOKEN` | required |
 | `--admin-token` | `EDEN_SYNCD_ADMIN_TOKEN` | dashboard disabled |
+| `--opensave-username` | `EDEN_SYNCD_OPENSAVE_USERNAME` | disables the OpenSave WebDAV endpoint unless paired with a password |
+| `--opensave-password` | `EDEN_SYNCD_OPENSAVE_PASSWORD` | disables the OpenSave WebDAV endpoint unless paired with a username |
 | `--data-dir` | `EDEN_SYNCD_DATA` | `./data` (`/var/lib/eden-syncd` in Docker) |
 | `--listen` | `EDEN_SYNCD_LISTEN` | `:8787` |
 | `--max-object-mib` | `EDEN_SYNCD_MAX_OBJECT_MIB` | `512` |
@@ -73,6 +79,24 @@ collected, so in-flight client uploads are safe. Initial values come from
 
 `eden-syncd healthcheck` probes `/healthz` and is used by the Docker `HEALTHCHECK`.
 `eden-syncd --version` prints the build version.
+
+### OpenSave WebDAV
+
+OpenSave and Eden use separate protocols and credentials. Setting both
+`EDEN_SYNCD_OPENSAVE_USERNAME` and `EDEN_SYNCD_OPENSAVE_PASSWORD` enables only the dedicated
+`/opensave/` WebDAV collection. It accepts `OPTIONS`, `PROPFIND`, `PUT`, `HEAD`, `GET`, `DELETE`,
+and `MOVE`, which covers desktop OpenSave's cloud mirror and Android OpenSave's staged upload.
+
+Use the `EDEN_SYNCD` provider in OpenSave and enter the service root, for example
+`https://nas.example:8788`; the client normalizes it to `https://nas.example:8788/opensave`.
+Every PC that uses the same endpoint and Basic Auth credentials shares one cloud mirror. OpenSave
+publishes a small current-save marker alongside its ZIP snapshots, so a later-opened PC can safely
+take a save that continues from its own history. Divergent saves are offered for review instead of
+being overwritten by timestamp.
+
+The OpenSave collection stores ordinary OpenSave ZIP snapshots, not Eden-encrypted objects. Keep it
+behind HTTPS, use a unique password that is not either Eden token, and include
+`data/opensave/` in the NAS backup policy along with the rest of the data directory.
 
 Clients identify themselves with a local persistent device ID. A device is shown as online while
 it has contacted the service within the last 90 seconds. The device ID is not a credential and is
@@ -89,7 +113,8 @@ using it.
 ## Run on a NAS
 
 Create a `.env` file next to `compose.yaml` containing `EDEN_SYNCD_TOKEN` and, when the dashboard
-is wanted, a separate `EDEN_SYNCD_ADMIN_TOKEN`; create a writable
+is wanted, a separate `EDEN_SYNCD_ADMIN_TOKEN`. To enable OpenSave, also set the independent
+`EDEN_SYNCD_OPENSAVE_USERNAME` and `EDEN_SYNCD_OPENSAVE_PASSWORD` pair; create a writable
 `data` directory owned by UID `10001`. Run `docker compose up -d --build` from this directory.
 The listener binds to `127.0.0.1:8787` by default. Set `EDEN_SYNCD_PORT` to use another host port,
 or `EDEN_SYNCD_BIND_ADDRESS` only when a firewall or Tailscale configuration protects it.
@@ -103,7 +128,8 @@ bearer token can be observed on that network.
 
 ### Deploy a published image
 
-After copying [`.env.example`](.env.example) to `.env` and replacing both placeholder tokens, run:
+After copying [`.env.example`](.env.example) to `.env`, replacing the placeholder tokens, and
+optionally setting the OpenSave Basic Auth pair, run:
 
 ```sh
 docker compose -f compose.nas.yaml up -d
@@ -128,6 +154,8 @@ reject during project creation. Copy it as `compose.yaml`, create a sibling `.en
 ```sh
 EDEN_SYNCD_TOKEN=replace-with-a-long-random-sync-token
 EDEN_SYNCD_ADMIN_TOKEN=replace-with-a-different-long-random-admin-token
+EDEN_SYNCD_OPENSAVE_USERNAME=opensave
+EDEN_SYNCD_OPENSAVE_PASSWORD=replace-with-a-third-long-random-secret
 ```
 
 Before starting the project, set the `user` field to the numeric owner of
@@ -143,6 +171,8 @@ pulled on the NAS. Build or copy an `eden-syncd` binary to `/usr/local/bin/eden-
 ```sh
 EDEN_SYNCD_TOKEN=replace-with-a-long-random-token
 EDEN_SYNCD_ADMIN_TOKEN=a-different-long-random-token
+EDEN_SYNCD_OPENSAVE_USERNAME=opensave
+EDEN_SYNCD_OPENSAVE_PASSWORD=replace-with-a-third-long-random-secret
 ```
 
 Install the unit at `/etc/systemd/system/eden-syncd.service`, then run
@@ -157,7 +187,9 @@ Place the service behind HTTPS. A Tailscale network is the recommended home-NAS 
 it avoids exposing port 8787 publicly. For a public deployment, use a reverse proxy with a valid
 TLS certificate and do not publish the service without authentication.
 
-The `data` directory contains every encrypted object and the snapshot index (`state.json`). Include
-it in the NAS backup policy and test restoration independently of Eden. It also holds dashboard
-labels and devices (`dashboard.json`), dashboard settings (`settings.json`) and the activity log
-(`events.json`). Data directories from earlier releases are read without migration.
+The `data` directory contains every encrypted object and the snapshot index (`state.json`). When
+OpenSave WebDAV is enabled it also contains `opensave/`, which holds its independent ZIP snapshot
+mirror. Include the entire directory in the NAS backup policy and test restoration independently of
+Eden. It also holds dashboard labels and devices (`dashboard.json`), dashboard settings
+(`settings.json`) and the activity log (`events.json`). Data directories from earlier releases are
+read without migration.

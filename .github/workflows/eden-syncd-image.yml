@@ -1,0 +1,56 @@
+name: Publish eden-syncd Docker image
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "tools/eden_syncd/**"
+      - ".github/workflows/eden-syncd-image.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Docker image version tag to publish
+        required: true
+        type: string
+        default: v2026.10.23-opensave
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: docker.io/jun9100/eden-syncd
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: jun9100
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ inputs.version || format('sha-{0}', github.sha) }}
+            type=sha,prefix=sha-
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: tools/eden_syncd
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ inputs.version || format('sha-{0}', github.sha) }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}

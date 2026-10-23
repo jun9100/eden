@@ -3,10 +3,11 @@
 #
 # Synology Container Manager deployment. Copy this file as compose.yaml and create
 # a .env file beside it containing EDEN_SYNCD_TOKEN and EDEN_SYNCD_ADMIN_TOKEN.
+# Add EDEN_SYNCD_OPENSAVE_USERNAME and EDEN_SYNCD_OPENSAVE_PASSWORD to enable /opensave/.
 
 services:
   eden-syncd:
-    image: jun9100/eden-syncd:v2026.10.21-dashboard
+    image: jun9100/eden-syncd:v2026.10.23-opensave
     container_name: eden-syncd
     user: "1026:100"
     env_file:

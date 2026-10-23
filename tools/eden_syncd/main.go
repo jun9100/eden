@@ -68,6 +68,10 @@ func main() {
 	listenAddress := flag.String("listen", envString("EDEN_SYNCD_LISTEN", ":8787"), "HTTP listen address")
 	token := flag.String("token", os.Getenv("EDEN_SYNCD_TOKEN"), "bearer token")
 	adminToken := flag.String("admin-token", os.Getenv("EDEN_SYNCD_ADMIN_TOKEN"), "administrator token for the web dashboard")
+	openSaveUsername := flag.String("opensave-username", os.Getenv("EDEN_SYNCD_OPENSAVE_USERNAME"),
+		"OpenSave WebDAV username")
+	openSavePassword := flag.String("opensave-password", os.Getenv("EDEN_SYNCD_OPENSAVE_PASSWORD"),
+		"OpenSave WebDAV password")
 	maxObjectMiB := flag.Int64("max-object-mib", int64(envInt("EDEN_SYNCD_MAX_OBJECT_MIB",
 		int(defaultMaxObjectBytes/(1024*1024)))), "maximum object size in MiB")
 	keepSnapshots := flag.Int("keep-snapshots", envInt("EDEN_SYNCD_KEEP_SNAPSHOTS", 0),
@@ -92,7 +96,9 @@ func main() {
 	slog.SetDefault(slog.New(logHandler))
 
 	s, err := newServerWithOptions(*dataDir, *token, *maxObjectMiB*1024*1024, serverOptions{
-		adminToken: *adminToken,
+		adminToken:       *adminToken,
+		openSaveUsername: *openSaveUsername,
+		openSavePassword: *openSavePassword,
 		settings: serverSettings{Retention: retentionPolicy{
 			KeepSnapshots: *keepSnapshots,
 			KeepDays:      *keepDays,
@@ -125,7 +131,7 @@ func main() {
 	}()
 
 	slog.Info("eden-syncd listening", "address", *listenAddress, "version", version,
-		"data_dir", *dataDir, "dashboard", *adminToken != "")
+		"data_dir", *dataDir, "dashboard", *adminToken != "", "opensave_webdav", *openSaveUsername != "")
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("serve", "error", err)
 		os.Exit(1)

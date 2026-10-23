@@ -62,6 +62,20 @@ restricts access. Set `EDEN_SYNCD_DATA_DIR` to place the persistent encrypted da
 When Docker image pulls are unavailable, the service source also includes an
 [`eden-syncd.service`](../../tools/eden_syncd/eden-syncd.service) systemd template.
 
+### OpenSave cloud mirror
+
+The same service can optionally host a separate WebDAV collection for OpenSave. Set both
+`EDEN_SYNCD_OPENSAVE_USERNAME` and `EDEN_SYNCD_OPENSAVE_PASSWORD` in the Compose or systemd
+environment, then configure OpenSave's **EDEN_SYNCD** provider with the service address and those
+Basic Auth credentials. The OpenSave endpoint is `<service-url>/opensave`; the client adds that
+suffix automatically when you enter only the service root.
+
+This WebDAV collection is separate from Eden Save Sync's bearer token and encrypted object store.
+It holds normal OpenSave ZIP snapshots, so use HTTPS and an independent password. PC OpenSave
+clients that share the endpoint can automatically bring forward a save that continues from their
+own history; a divergent save remains a conflict for review rather than silently replacing local
+progress. Include `data/opensave/` in the NAS backup policy.
+
 ### LAN dashboard
 
 `eden-syncd` includes an administrator dashboard at `/admin/`. Add a separate, long random

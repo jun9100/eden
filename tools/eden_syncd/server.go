@@ -33,11 +33,13 @@ const (
 var version = "dev"
 
 type server struct {
-	dataDir        string
-	token          string
-	adminToken     string
-	maxObjectBytes int64
-	startedAt      time.Time
+	dataDir          string
+	token            string
+	adminToken       string
+	openSaveUsername string
+	openSavePassword string
+	maxObjectBytes   int64
+	startedAt        time.Time
 
 	mu        sync.Mutex
 	state     serverState
@@ -51,8 +53,10 @@ type server struct {
 }
 
 type serverOptions struct {
-	adminToken string
-	settings   serverSettings
+	adminToken       string
+	openSaveUsername string
+	openSavePassword string
+	settings         serverSettings
 }
 
 func newServer(dataDir, token string, maxObjectBytes int64, adminTokens ...string) (*server, error) {
@@ -71,6 +75,9 @@ func newServerWithOptions(dataDir, token string, maxObjectBytes int64, options s
 		slog.Error("administrator dashboard disabled: EDEN_SYNCD_ADMIN_TOKEN must differ from EDEN_SYNCD_TOKEN")
 		options.adminToken = ""
 	}
+	if (options.openSaveUsername == "") != (options.openSavePassword == "") {
+		return nil, errors.New("EDEN_SYNCD_OPENSAVE_USERNAME and EDEN_SYNCD_OPENSAVE_PASSWORD must be set together")
+	}
 	if maxObjectBytes <= 0 {
 		return nil, errors.New("max object size must be positive")
 	}
@@ -80,14 +87,21 @@ func newServerWithOptions(dataDir, token string, maxObjectBytes int64, options s
 	if err := os.MkdirAll(filepath.Join(dataDir, "objects"), 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
+	if options.openSaveUsername != "" {
+		if err := os.MkdirAll(filepath.Join(dataDir, "opensave"), 0o700); err != nil {
+			return nil, fmt.Errorf("create OpenSave data directory: %w", err)
+		}
+	}
 
 	s := &server{
-		dataDir:        dataDir,
-		token:          token,
-		adminToken:     options.adminToken,
-		maxObjectBytes: maxObjectBytes,
-		startedAt:      time.Now().UTC(),
-		state:          serverState{Scopes: make(map[string]scope)},
+		dataDir:          dataDir,
+		token:            token,
+		adminToken:       options.adminToken,
+		openSaveUsername: options.openSaveUsername,
+		openSavePassword: options.openSavePassword,
+		maxObjectBytes:   maxObjectBytes,
+		startedAt:        time.Now().UTC(),
+		state:            serverState{Scopes: make(map[string]scope)},
 		dashboard: dashboardState{
 			Scopes:  make(map[string]scopeMetadata),
 			Devices: make(map[string]deviceInfo),
@@ -120,6 +134,14 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("PUT /v1/scopes/{id}/snapshots/{snapshot}", s.requireToken(s.handlePutSnapshot))
 	mux.HandleFunc("PUT /v1/scopes/{id}/metadata", s.requireToken(s.handlePutScopeMetadata))
 	mux.HandleFunc("POST /v1/devices/heartbeat", s.requireToken(s.handleDeviceHeartbeat))
+
+	// OpenSave uses ordinary WebDAV snapshots, isolated from the encrypted Eden
+	// object store and guarded by a credential that is independent of both Eden
+	// client and dashboard credentials.
+	if s.openSaveEnabled() {
+		mux.HandleFunc("/opensave", s.requireOpenSaveAuth(s.handleOpenSaveWebDAV))
+		mux.HandleFunc("/opensave/", s.requireOpenSaveAuth(s.handleOpenSaveWebDAV))
+	}
 
 	s.registerAdmin(mux)
 	return s.withCommonHeaders(mux)
