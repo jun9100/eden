@@ -69,7 +69,9 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
     override var themeId: Int = 0
 
     private val CHECKED_DECRYPTION = "CheckedDecryption"
+    private val USER_DATA_WRITE_ACCESS_WARNING_SHOWN = "UserDataWriteAccessWarningShown"
     private var checkedDecryption = false
+    private var userDataWriteAccessWarningShown = false
 
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(YuzuApplication.applyLanguage(base))
@@ -101,6 +103,8 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
 
         if (savedInstanceState != null) {
             checkedDecryption = savedInstanceState.getBoolean(CHECKED_DECRYPTION)
+            userDataWriteAccessWarningShown =
+                savedInstanceState.getBoolean(USER_DATA_WRITE_ACCESS_WARNING_SHOWN)
         }
         if (!checkedDecryption) {
             val firstTimeSetup = PreferenceManager.getDefaultSharedPreferences(applicationContext)
@@ -168,6 +172,7 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
         }
         setInsets()
         applyFullscreenPreference()
+        showUserDataWriteAccessWarning()
     }
 
     /**
@@ -323,6 +328,24 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(CHECKED_DECRYPTION, checkedDecryption)
+        outState.putBoolean(USER_DATA_WRITE_ACCESS_WARNING_SHOWN, userDataWriteAccessWarningShown)
+    }
+
+    private fun showUserDataWriteAccessWarning() {
+        if (userDataWriteAccessWarningShown || !DirectoryInitialization.hasUserDataWriteAccessIssue) {
+            return
+        }
+        userDataWriteAccessWarningShown = true
+        binding.root.post {
+            if (isFinishing || isDestroyed) {
+                return@post
+            }
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.user_data_write_access_error_title)
+                .setMessage(R.string.user_data_write_access_error_message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+        }
     }
 
     fun finishSetup(navController: NavController) {

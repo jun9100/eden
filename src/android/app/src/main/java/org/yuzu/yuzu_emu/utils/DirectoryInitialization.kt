@@ -4,6 +4,7 @@
 package org.yuzu.yuzu_emu.utils
 
 import androidx.preference.PreferenceManager
+import java.io.File
 import java.io.IOException
 import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.YuzuApplication
@@ -18,6 +19,9 @@ import org.yuzu.yuzu_emu.utils.PreferenceUtil.migratePreference
 object DirectoryInitialization {
     private var userPath: String? = null
 
+    var hasUserDataWriteAccessIssue: Boolean = false
+        private set
+
     var areDirectoriesReady: Boolean = false
 
     fun start() {
@@ -27,6 +31,12 @@ object DirectoryInitialization {
             NativeLibrary.initializeSystem(false)
             NativeLibrary.reloadProfiles()
             migrateSettings()
+            hasUserDataWriteAccessIssue = hasUserDataWriteAccessIssue()
+            if (hasUserDataWriteAccessIssue) {
+                Log.error(
+                    "Eden user data cannot be written: configuration or system-save data may not persist"
+                )
+            }
             areDirectoriesReady = true
         }
     }
@@ -44,6 +54,20 @@ object DirectoryInitialization {
         } catch (e: IOException) {
             e.printStackTrace()
         }
+    }
+
+    private fun hasUserDataWriteAccessIssue(): Boolean {
+        val root = userPath?.let(::File) ?: return true
+        return !isWritableOrCreatable(File(root, "config/config.ini")) ||
+            !isWritableOrCreatable(File(root, "nand/system/save"))
+    }
+
+    private fun isWritableOrCreatable(path: File): Boolean {
+        var existingPath: File? = path
+        while (existingPath != null && !existingPath.exists()) {
+            existingPath = existingPath.parentFile
+        }
+        return existingPath?.canWrite() == true
     }
 
     private fun migrateSettings() {
