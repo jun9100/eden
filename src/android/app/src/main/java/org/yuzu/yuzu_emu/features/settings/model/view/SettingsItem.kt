@@ -389,8 +389,7 @@ abstract class SettingsItem(
                 StringInputSetting(
                     StringSetting.SAVE_SYNC_TOKEN,
                     titleId = R.string.save_sync_token,
-                    descriptionId = R.string.save_sync_token_description,
-                    isSecret = true
+                    descriptionId = R.string.save_sync_token_description
                 )
             )
             put(
@@ -408,8 +407,7 @@ abstract class SettingsItem(
                         }
                     },
                     validator = NetDataValidators::saveSyncKey,
-                    errorId = R.string.save_sync_key_error,
-                    isSecret = true
+                    errorId = R.string.save_sync_key_error
                 )
             )
             put(DateTimeSetting(LongSetting.CUSTOM_RTC, titleId = R.string.set_custom_rtc))
