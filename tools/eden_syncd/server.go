@@ -135,6 +135,13 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("PUT /v1/scopes/{id}/metadata", s.requireToken(s.handlePutScopeMetadata))
 	mux.HandleFunc("POST /v1/devices/heartbeat", s.requireToken(s.handleDeviceHeartbeat))
 
+	// OpenSave is a separate client family. It uses the same private sync
+	// credential but a wholly separate on-disk namespace from Eden snapshots.
+	mux.HandleFunc("GET /v1/opensave/files", s.requireToken(s.handleOpenSaveList))
+	mux.HandleFunc("PUT /v1/opensave/files/{type}/{name}", s.requireToken(s.handleOpenSaveNativePut))
+	mux.HandleFunc("GET /v1/opensave/files/{type}/{name}", s.requireToken(s.handleOpenSaveNativeGet))
+	mux.HandleFunc("DELETE /v1/opensave/files/{type}/{name}", s.requireToken(s.handleOpenSaveNativeDelete))
+
 	// OpenSave uses ordinary WebDAV snapshots, isolated from the encrypted Eden
 	// object store and guarded by a credential that is independent of both Eden
 	// client and dashboard credentials.

@@ -19,6 +19,17 @@ The health endpoint is unauthenticated at `GET /healthz`. All `/v1` endpoints re
 `EDEN_SYNCD_OPENSAVE_PASSWORD` are set, OpenSave clients can use standard WebDAV at
 `http://127.0.0.1:8787/opensave` with those Basic Auth credentials.
 
+## OpenSave native backup API
+
+OpenSave `v2.4.3` and later connects directly to this service. Select **EDEN_SYNCD**, enter the
+service address and the same sync key used by Eden; no WebDAV URL or Basic credentials are used.
+Archives live separately from Eden encrypted objects under `data/opensave/`, in a mandatory type
+namespace: `pc`, `switch`, or an extensible `emulator-*` type. A PC save and an emulator save
+cannot overwrite one another, even when their game ids match.
+
+The legacy `/opensave/` WebDAV endpoint remains only for older OpenSave builds and keeps its
+independent Basic credentials.
+
 ## Administrator dashboard
 
 Set the optional `EDEN_SYNCD_ADMIN_TOKEN` (it must differ from `EDEN_SYNCD_TOKEN`; when the two
