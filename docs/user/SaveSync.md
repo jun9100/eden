@@ -13,9 +13,12 @@ Each encrypted snapshot is authenticated to its save scope, so the server cannot
 another title or user scope.
 
 Before launching a game, Eden checks the matching remote scope. If the local save directory is empty,
-it downloads, verifies, decrypts, and installs the latest snapshot. Existing local data is never
-overwritten automatically. If two devices change the same scope independently, the later upload is
-kept as a local conflict snapshot instead of overwriting the server version.
+it downloads, verifies, decrypts, and installs the latest snapshot. When an existing local save still
+matches the content digest recorded for its last synchronized snapshot, Eden can also safely advance it
+to a newer cloud head. A locally changed or pending save is never overwritten automatically; if two
+devices change the same scope independently, the later upload is kept as a local conflict snapshot
+instead of overwriting the server version. An unresolved conflict also blocks later automatic restores
+for that save until it is resolved explicitly.
 
 ## Configure Eden
 

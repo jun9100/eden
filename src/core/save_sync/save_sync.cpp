@@ -525,6 +525,14 @@ std::optional<std::vector<u8>> BuildArchive(const fs::path& directory) {
     return archive;
 }
 
+// A stored content digest lets a device prove that its local save still matches the last snapshot
+// it captured or restored. Only that state may be advanced automatically to a newer cloud head.
+std::optional<std::string> DirectoryContentDigest(const Configuration& configuration,
+                                                  const fs::path& directory) {
+    const auto archive = BuildArchive(directory);
+    return archive ? ContentDigest(configuration, *archive) : std::nullopt;
+}
+
 std::optional<std::vector<u8>> DecompressArchive(std::span<const u8> compressed) {
     const auto decompressed_size = ZSTD_getFrameContentSize(compressed.data(), compressed.size());
     if (decompressed_size == ZSTD_CONTENTSIZE_ERROR ||
@@ -973,6 +981,30 @@ std::optional<PendingSnapshot> LatestPendingSnapshot(std::string_view scope_id) 
         }
     }
     return latest;
+}
+
+// A failed compare-and-swap upload is retained locally for recovery. Until the user resolves that
+// conflict explicitly, it must also block a later automatic cloud restore of the working save.
+bool HasRetainedConflict(std::string_view scope_id) {
+    std::error_code error;
+    const auto directory = PendingDirectory() / "conflicts";
+    if (!fs::is_directory(directory, error) || error) {
+        return false;
+    }
+
+    for (const auto& entry : fs::directory_iterator(directory, error)) {
+        if (error) {
+            return false;
+        }
+        if (!entry.is_regular_file() || entry.path().extension() != ".conflict") {
+            continue;
+        }
+        const auto snapshot = ReadDescriptor(entry.path());
+        if (snapshot && snapshot->scope_id == scope_id) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::optional<std::string> ReadBinaryFile(const fs::path& path) {
@@ -1539,19 +1571,62 @@ struct Manager::Impl {
 
         std::string parent_snapshot_id = KnownHead(scope_id);
         const auto local_directory_is_empty = IsDirectoryEmpty(directory);
-        // Only an empty local save can be restored automatically, so there is nothing to wait for
-        // otherwise. When the server was just unreachable, do not stall the game on a timeout.
-        if (local_directory_is_empty && *local_directory_is_empty && !ServerRecentlyUnreachable()) {
+        // A local directory can be advanced safely only when its current content still matches the
+        // last synchronized snapshot. Anything else may contain progress made on this device and
+        // must remain local so its later upload becomes an explicit conflict instead of data loss.
+        if (local_directory_is_empty && !ServerRecentlyUnreachable()) {
+            const auto head_before_remote_check = parent_snapshot_id;
             const auto client = MakeClient(*configuration);
             if (const auto remote_head = GetRemoteHead(*client, *configuration, scope_id);
                 remote_head && !remote_head->id.empty()) {
-                if (const auto content = RestoreRemoteSnapshot(*client, *configuration, scope_id,
-                                                               *remote_head, directory)) {
-                    parent_snapshot_id = remote_head->id;
-                    if (!SetKnownHead(scope_id, remote_head->id)) {
-                        LOG_WARNING(Core, "Save Sync could not persist the restored snapshot head");
+                // Serialize this decision with uploads and local snapshot creation. A conflict
+                // moves from the pending queue into conflicts, and a successful upload advances
+                // the known head, so neither transition may race an automatic restore.
+                std::scoped_lock upload_lock{upload_mutex};
+                std::scoped_lock pending_lock{pending_mutex};
+                const auto current_head = KnownHead(scope_id);
+                if (current_head != head_before_remote_check) {
+                    // A local upload completed while the remote request was in flight. Do not
+                    // install an older response over it; a later open will check the server again.
+                    parent_snapshot_id = current_head;
+                } else if (LatestPendingSnapshot(scope_id)) {
+                    // A pending snapshot represents unsynchronized local progress.
+                } else if (HasRetainedConflict(scope_id)) {
+                    LOG_WARNING(Core,
+                                "Save Sync found a newer cloud snapshot for scope {} but an "
+                                "unresolved local conflict is retained; preserving the local save",
+                                scope_id);
+                } else {
+                    bool overwrite_local{};
+                    if (!*local_directory_is_empty && !parent_snapshot_id.empty() &&
+                        remote_head->id != parent_snapshot_id) {
+                        const auto known_content = KnownContent(scope_id);
+                        const auto local_content =
+                            known_content.empty()
+                                ? std::nullopt
+                                : DirectoryContentDigest(*configuration, directory);
+                        if (local_content && *local_content == known_content) {
+                            overwrite_local = true;
+                        } else if (!known_content.empty()) {
+                            LOG_WARNING(
+                                Core,
+                                "Save Sync found a newer cloud snapshot for scope {} but local "
+                                "data changed; preserving the local save as a conflict",
+                                scope_id);
+                        }
                     }
-                    SetKnownContent(scope_id, *content);
+                    if (*local_directory_is_empty || overwrite_local) {
+                        if (const auto content =
+                                RestoreRemoteSnapshot(*client, *configuration, scope_id,
+                                                      *remote_head, directory, overwrite_local)) {
+                            parent_snapshot_id = remote_head->id;
+                            if (!SetKnownHead(scope_id, remote_head->id)) {
+                                LOG_WARNING(
+                                    Core, "Save Sync could not persist the restored snapshot head");
+                            }
+                            SetKnownContent(scope_id, *content);
+                        }
+                    }
                 }
             }
         }
