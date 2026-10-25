@@ -1077,6 +1077,15 @@ void QuarantineLegacyPendingSnapshots() {
                 LOG_WARNING(Core, "Save Sync could not quarantine an unverified pending snapshot");
                 continue;
             }
+        } else {
+            // An interrupted earlier move may have left a duplicate source descriptor. The copy
+            // already in quarantine is the recovery record, so remove only the uploadable twin.
+            error.clear();
+            fs::remove(snapshot.descriptor_path, error);
+            if (error) {
+                LOG_WARNING(Core, "Save Sync could not remove a duplicate legacy pending snapshot");
+                continue;
+            }
         }
         LOG_WARNING(Core,
                     "Save Sync quarantined an unverified pre-v2 pending snapshot; current local "
@@ -1108,21 +1117,35 @@ bool QuarantinePendingChainsForEmptyRemote(std::string_view scope_id) {
         }
     }
 
+    // Resolve each candidate as either a legitimate root (empty parent) or a chain that ultimately
+    // depends on a missing parent. Unresolved cycles, plus every descendant of one, are unsafe too.
+    std::set<std::string> safe;
     std::set<std::string> unsafe;
-    for (const auto& [snapshot_id, snapshot] : snapshots) {
-        std::set<std::string> ancestors;
-        std::string parent = snapshot.parent_snapshot_id;
-        while (!parent.empty()) {
-            if (!ancestors.insert(parent).second) {
-                unsafe.insert(snapshot_id);
-                break;
+    bool changed{};
+    do {
+        changed = false;
+        for (const auto& [snapshot_id, snapshot] : snapshots) {
+            if (safe.contains(snapshot_id) || unsafe.contains(snapshot_id)) {
+                continue;
             }
-            const auto iterator = snapshots.find(parent);
-            if (iterator == snapshots.end()) {
-                unsafe.insert(snapshot_id);
-                break;
+            if (snapshot.parent_snapshot_id.empty()) {
+                safe.insert(snapshot_id);
+                changed = true;
+                continue;
             }
-            parent = iterator->second.parent_snapshot_id;
+            const auto parent = snapshots.find(snapshot.parent_snapshot_id);
+            if (parent == snapshots.end() || unsafe.contains(snapshot.parent_snapshot_id)) {
+                unsafe.insert(snapshot_id);
+                changed = true;
+            } else if (safe.contains(snapshot.parent_snapshot_id)) {
+                safe.insert(snapshot_id);
+                changed = true;
+            }
+        }
+    } while (changed);
+    for (const auto& [snapshot_id, _] : snapshots) {
+        if (!safe.contains(snapshot_id)) {
+            unsafe.insert(snapshot_id);
         }
     }
     if (unsafe.empty()) {
