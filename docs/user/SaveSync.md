@@ -12,13 +12,31 @@ keys, firmware, complete NAND images, SDMC data, mods, shader caches, and logs a
 Each encrypted snapshot is authenticated to its save scope, so the server cannot substitute it into
 another title or user scope.
 
+On an orderly game stop or normal application close, Eden first persists the snapshot locally and
+then makes an immediate upload pass before the session finishes. A network failure leaves the
+snapshot in the local retry queue. On desktop, wait for Eden to exit after closing its window; using
+the operating system's task-kill command, a power loss, or a crash can bypass that final pass. Those
+events cannot upload progress that has not yet been flushed, so reopen the same device and let it
+finish synchronizing before continuing that game elsewhere. Upgrade every Eden client before
+upgrading `game-save`: current `game-save` releases reject save writes from older clients to prevent
+their obsolete state tracking from advancing a cloud head.
+
 Before launching a game, Eden checks the matching remote scope. If the local save directory is empty,
 it downloads, verifies, decrypts, and installs the latest snapshot. When an existing local save still
 matches the content digest recorded for its last synchronized snapshot, Eden can also safely advance it
-to a newer cloud head. A locally changed or pending save is never overwritten automatically; if two
-devices change the same scope independently, the later upload is kept as a local conflict snapshot
-instead of overwriting the server version. An unresolved conflict also blocks later automatic restores
-for that save until it is resolved explicitly.
+to a newer cloud head. Eden also verifies that the local files still match their confirmed cloud head
+before allowing a new upload to continue that head. A stale copy, manual replacement, or interrupted
+state is retained as a local and `game-save` conflict snapshot instead of silently becoming the newest
+cloud version. During the first v2 sync after an upgrade, Eden ignores the old content cache and
+quarantines old pending snapshots; an existing local save is trusted only after its content matches a
+read-only download of the current cloud head. If the server confirms that the scope has no cloud head,
+Eden retains any pending chain rooted at the missing head locally, clears only its stale baseline, and
+creates a new initial snapshot from the current local files. An upload already queued from a confirmed
+local state can continue safely after a restart. A locally changed or pending save is never overwritten
+automatically; if two devices change the same scope independently, the later upload is kept as a fixed
+conflict copy instead of overwriting the server version. Select the desired copy in the `game-save`
+dashboard; when the local files match the selected cloud head, Eden clears its local conflict marker
+and resumes normal synchronization.
 
 ## Configure Eden
 
