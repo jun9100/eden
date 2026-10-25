@@ -6,9 +6,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <charconv>
 #include <chrono>
-#include <cctype>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
@@ -45,8 +45,8 @@
 
 #include "common/fs/fs.h"
 #include "common/fs/fs_paths.h"
-#include "common/hex_util.h"
 #include "common/fs/path_util.h"
+#include "common/hex_util.h"
 #include "common/httplib.h"
 #include "common/logging.h"
 #include "common/scm_rev.h"
@@ -94,6 +94,7 @@ struct TrackedScope {
     std::string scope_id;
     std::string parent_snapshot_id;
     fs::path directory;
+    bool force_conflict{};
 };
 
 struct GameMetadata {
@@ -106,7 +107,10 @@ struct PendingSnapshot {
     std::string snapshot_id;
     std::string blob_id;
     std::string parent_snapshot_id;
+    std::string content_digest;
+    bool content_verified{};
     std::string created_at;
+    bool conflict{};
     fs::path blob_path;
     fs::path descriptor_path;
 };
@@ -335,7 +339,8 @@ std::optional<Configuration> ReadConfiguration() {
 
     const auto decoded_key = DeriveKeyCached(key);
     if (!decoded_key) {
-        LOG_ERROR(Core, "Save Sync is disabled because EDEN_SYNC_KEY is not a valid legacy hex key or passphrase");
+        LOG_ERROR(Core, "Save Sync is disabled because EDEN_SYNC_KEY is not a valid legacy hex key "
+                        "or passphrase");
         return std::nullopt;
     }
 
@@ -358,8 +363,8 @@ std::string Base64Encode(std::span<const u8> bytes) {
         return {};
     }
     std::string output(4 * ((bytes.size() + 2) / 3), '\0');
-    const auto length = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(output.data()), bytes.data(),
-                                         static_cast<int>(bytes.size()));
+    const auto length = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(output.data()),
+                                        bytes.data(), static_cast<int>(bytes.size()));
     output.resize(static_cast<std::size_t>(length));
     return output;
 }
@@ -733,6 +738,26 @@ std::optional<bool> IsDirectoryEmpty(const fs::path& directory) {
     return fs::directory_iterator(directory, error) == fs::directory_iterator{} && !error;
 }
 
+// Restores must never reuse a backup name: a second manual restore of the same cloud snapshot
+// should not discard the only local copy retained by the first restore.
+std::optional<fs::path> NextRestoreBackupPath(const fs::path& parent,
+                                               std::string_view snapshot_id) {
+    const auto prefix = fmt::format(".eden-save-sync-backup-{}", snapshot_id);
+    for (std::size_t suffix = 0; suffix < 10000; ++suffix) {
+        const auto candidate =
+            parent / (suffix == 0 ? prefix : fmt::format("{}-{}", prefix, suffix));
+        std::error_code error;
+        const bool exists = fs::exists(candidate, error);
+        if (error) {
+            return std::nullopt;
+        }
+        if (!exists) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
 bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
                     std::string_view snapshot_id, bool overwrite) {
     const auto empty = IsDirectoryEmpty(destination);
@@ -755,11 +780,14 @@ bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
         fs::remove_all(staging, error);
         return false;
     }
+    std::optional<fs::path> backup;
     if (destination_exists) {
-        const fs::path backup = parent / fmt::format(".eden-save-sync-backup-{}", snapshot_id);
-        fs::remove_all(backup, error);
-        error.clear();
-        fs::rename(destination, backup, error);
+        backup = NextRestoreBackupPath(parent, snapshot_id);
+        if (!backup) {
+            fs::remove_all(staging, error);
+            return false;
+        }
+        fs::rename(destination, *backup, error);
         if (error) {
             fs::remove_all(staging, error);
             return false;
@@ -767,10 +795,9 @@ bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
     }
     fs::rename(staging, destination, error);
     if (error) {
-        if (destination_exists) {
+        if (backup) {
             std::error_code restore_error;
-            fs::rename(parent / fmt::format(".eden-save-sync-backup-{}", snapshot_id),
-                       destination, restore_error);
+            fs::rename(*backup, destination, restore_error);
         }
         fs::remove_all(staging, error);
         return false;
@@ -813,7 +840,10 @@ fs::path PublishedLabelsPath() {
 }
 
 fs::path KnownContentsPath() {
-    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" / "contents.json";
+    // The old contents.json was written when a snapshot was merely queued, so it cannot prove a
+    // cloud head. Start a separate v2 cache rather than trusting a pre-v2 entry after an upgrade.
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" /
+           "contents-v2.json";
 }
 
 bool WriteBytes(const fs::path& path, std::span<const u8> bytes) {
@@ -829,9 +859,13 @@ bool WriteBytes(const fs::path& path, std::span<const u8> bytes) {
 
 bool WriteDescriptor(const PendingSnapshot& snapshot) {
     const json descriptor = {
-        {"scope_id", snapshot.scope_id},     {"snapshot_id", snapshot.snapshot_id},
-        {"blob_id", snapshot.blob_id},       {"parent_snapshot_id", snapshot.parent_snapshot_id},
+        {"scope_id", snapshot.scope_id},
+        {"snapshot_id", snapshot.snapshot_id},
+        {"blob_id", snapshot.blob_id},
+        {"parent_snapshot_id", snapshot.parent_snapshot_id},
+        {"content_digest", snapshot.content_digest},
         {"created_at", snapshot.created_at},
+        {"conflict", snapshot.conflict},
     };
     const auto temporary_path = snapshot.descriptor_path.string() + ".tmp";
     std::ofstream output(temporary_path, std::ios::trunc);
@@ -919,6 +953,15 @@ bool WriteScopeMap(const fs::path& path, const std::map<std::string, std::string
     return !error;
 }
 
+bool RemoveScopeMapEntry(const fs::path& path, std::string_view scope_id,
+                         bool (*valid_value)(std::string_view)) {
+    auto values = ReadScopeMap(path, valid_value);
+    if (values.erase(std::string{scope_id}) == 0) {
+        return true;
+    }
+    return WriteScopeMap(path, values);
+}
+
 bool IsSnapshotIdentifier(std::string_view value) {
     return IsIdentifier(value, 128);
 }
@@ -935,12 +978,16 @@ std::optional<PendingSnapshot> ReadDescriptor(const fs::path& descriptor_path) {
     try {
         const json descriptor = json::parse(input);
         const auto snapshot_id = descriptor.at("snapshot_id").get<std::string>();
+        const bool content_verified = descriptor.contains("content_digest");
         PendingSnapshot snapshot{
             .scope_id = descriptor.at("scope_id").get<std::string>(),
             .snapshot_id = snapshot_id,
             .blob_id = descriptor.at("blob_id").get<std::string>(),
             .parent_snapshot_id = descriptor.at("parent_snapshot_id").get<std::string>(),
+            .content_digest = descriptor.value("content_digest", std::string{}),
+            .content_verified = content_verified,
             .created_at = descriptor.at("created_at").get<std::string>(),
+            .conflict = descriptor.value("conflict", false),
             .blob_path = descriptor_path.parent_path() / (snapshot_id + ".blob"),
             .descriptor_path = descriptor_path,
         };
@@ -948,6 +995,7 @@ std::optional<PendingSnapshot> ReadDescriptor(const fs::path& descriptor_path) {
             !IsLowerHex(snapshot.blob_id, HashSize * 2) ||
             (!snapshot.parent_snapshot_id.empty() &&
              !IsIdentifier(snapshot.parent_snapshot_id, 128)) ||
+            (content_verified && !IsContentDigest(snapshot.content_digest)) ||
             snapshot.created_at.empty()) {
             return std::nullopt;
         }
@@ -955,6 +1003,208 @@ std::optional<PendingSnapshot> ReadDescriptor(const fs::path& descriptor_path) {
     } catch (const json::exception&) {
         return std::nullopt;
     }
+}
+
+// Snapshots queued by a pre-v2 client have no trustworthy local-content proof. Keep them on disk
+// for recovery, but never let them advance the remote head after the protocol upgrade.
+void QuarantineLegacyPendingSnapshots() {
+    std::error_code error;
+    const auto directory = PendingDirectory();
+    if (!fs::is_directory(directory, error) || error) {
+        return;
+    }
+
+    std::vector<PendingSnapshot> legacy;
+    for (const auto& entry : fs::directory_iterator(directory, error)) {
+        if (error) {
+            return;
+        }
+        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+            continue;
+        }
+        const auto snapshot = ReadDescriptor(entry.path());
+        if (snapshot && !snapshot->content_verified) {
+            legacy.push_back(*snapshot);
+        }
+    }
+    if (legacy.empty()) {
+        return;
+    }
+
+    const auto quarantine = directory / "legacy-unverified";
+    fs::create_directories(quarantine, error);
+    if (error) {
+        LOG_WARNING(Core, "Save Sync could not create the legacy pending quarantine");
+        return;
+    }
+    for (const auto& snapshot : legacy) {
+        const auto descriptor_destination = quarantine / snapshot.descriptor_path.filename();
+        const auto blob_destination = quarantine / snapshot.blob_path.filename();
+        error.clear();
+        const bool descriptor_already_quarantined = fs::exists(descriptor_destination, error);
+        if (error) {
+            LOG_WARNING(Core, "Save Sync could not inspect the legacy pending quarantine");
+            continue;
+        }
+
+        // Move the blob first. If the process stops before the descriptor move, the next run can
+        // finish the operation from the still-visible descriptor instead of leaving recovery data
+        // orphaned outside the quarantine.
+        error.clear();
+        const bool blob_already_quarantined = fs::exists(blob_destination, error);
+        if (error) {
+            LOG_WARNING(Core, "Save Sync could not inspect a legacy pending blob");
+            continue;
+        }
+        error.clear();
+        const bool blob_exists = fs::exists(snapshot.blob_path, error);
+        if (error) {
+            LOG_WARNING(Core, "Save Sync could not inspect a legacy pending blob");
+            continue;
+        }
+        if (blob_exists && !blob_already_quarantined) {
+            fs::rename(snapshot.blob_path, blob_destination, error);
+            if (error) {
+                LOG_WARNING(Core, "Save Sync could not quarantine an unverified pending blob");
+                continue;
+            }
+        }
+
+        if (!descriptor_already_quarantined) {
+            error.clear();
+            fs::rename(snapshot.descriptor_path, descriptor_destination, error);
+            if (error) {
+                LOG_WARNING(Core, "Save Sync could not quarantine an unverified pending snapshot");
+                continue;
+            }
+        } else {
+            // An interrupted earlier move may have left a duplicate source descriptor. The copy
+            // already in quarantine is the recovery record, so remove only the uploadable twin.
+            error.clear();
+            fs::remove(snapshot.descriptor_path, error);
+            if (error) {
+                LOG_WARNING(Core, "Save Sync could not remove a duplicate legacy pending snapshot");
+                continue;
+            }
+        }
+        LOG_WARNING(Core,
+                    "Save Sync quarantined an unverified pre-v2 pending snapshot; current local "
+                    "files will be compared with the cloud head before any upload");
+    }
+}
+
+// A confirmed empty remote scope cannot accept a queued chain that starts from an older cloud
+// head. Preserve that chain for recovery and let the current local files create a new root instead
+// of retrying a request whose parent can never exist on this server.
+bool QuarantinePendingChainsForEmptyRemote(std::string_view scope_id) {
+    std::error_code error;
+    const auto directory = PendingDirectory();
+    if (!fs::is_directory(directory, error) || error) {
+        return true;
+    }
+
+    std::map<std::string, PendingSnapshot> snapshots;
+    for (const auto& entry : fs::directory_iterator(directory, error)) {
+        if (error) {
+            return false;
+        }
+        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+            continue;
+        }
+        if (const auto snapshot = ReadDescriptor(entry.path()); snapshot &&
+                                                             snapshot->scope_id == scope_id) {
+            snapshots.emplace(snapshot->snapshot_id, *snapshot);
+        }
+    }
+
+    // Resolve each candidate as either a legitimate root (empty parent) or a chain that ultimately
+    // depends on a missing parent. Unresolved cycles, plus every descendant of one, are unsafe too.
+    std::set<std::string> safe;
+    std::set<std::string> unsafe;
+    bool changed{};
+    do {
+        changed = false;
+        for (const auto& [snapshot_id, snapshot] : snapshots) {
+            if (safe.contains(snapshot_id) || unsafe.contains(snapshot_id)) {
+                continue;
+            }
+            if (snapshot.parent_snapshot_id.empty()) {
+                safe.insert(snapshot_id);
+                changed = true;
+                continue;
+            }
+            const auto parent = snapshots.find(snapshot.parent_snapshot_id);
+            if (parent == snapshots.end() || unsafe.contains(snapshot.parent_snapshot_id)) {
+                unsafe.insert(snapshot_id);
+                changed = true;
+            } else if (safe.contains(snapshot.parent_snapshot_id)) {
+                safe.insert(snapshot_id);
+                changed = true;
+            }
+        }
+    } while (changed);
+    for (const auto& [snapshot_id, _] : snapshots) {
+        if (!safe.contains(snapshot_id)) {
+            unsafe.insert(snapshot_id);
+        }
+    }
+    if (unsafe.empty()) {
+        return true;
+    }
+
+    const auto quarantine = directory / "empty-remote" / std::string{scope_id};
+    fs::create_directories(quarantine, error);
+    if (error) {
+        LOG_WARNING(Core, "Save Sync could not create the empty-remote pending quarantine");
+        return false;
+    }
+    for (const auto& snapshot_id : unsafe) {
+        const auto& snapshot = snapshots.at(snapshot_id);
+        const auto descriptor_destination = quarantine / snapshot.descriptor_path.filename();
+        const auto blob_destination = quarantine / snapshot.blob_path.filename();
+
+        error.clear();
+        const bool blob_exists = fs::exists(snapshot.blob_path, error);
+        if (error) {
+            return false;
+        }
+        error.clear();
+        const bool blob_already_quarantined = fs::exists(blob_destination, error);
+        if (error) {
+            return false;
+        }
+        if (blob_exists && !blob_already_quarantined) {
+            fs::rename(snapshot.blob_path, blob_destination, error);
+            if (error) {
+                LOG_WARNING(Core, "Save Sync could not quarantine a stale pending blob");
+                return false;
+            }
+        }
+
+        error.clear();
+        const bool descriptor_already_quarantined = fs::exists(descriptor_destination, error);
+        if (error) {
+            return false;
+        }
+        if (!descriptor_already_quarantined) {
+            fs::rename(snapshot.descriptor_path, descriptor_destination, error);
+            if (error) {
+                LOG_WARNING(Core, "Save Sync could not quarantine a stale pending snapshot");
+                return false;
+            }
+        } else {
+            // Snapshot IDs are random and unique. If a previous interrupted quarantine already
+            // has this ID, the root descriptor is a duplicate that must not remain uploadable.
+            fs::remove(snapshot.descriptor_path, error);
+            if (error) {
+                LOG_WARNING(Core, "Save Sync could not remove a duplicate stale pending snapshot");
+                return false;
+            }
+        }
+        LOG_WARNING(Core,
+                    "Save Sync quarantined a pending chain whose cloud parent no longer exists");
+    }
+    return true;
 }
 
 std::optional<PendingSnapshot> LatestPendingSnapshot(std::string_view scope_id) {
@@ -973,7 +1223,7 @@ std::optional<PendingSnapshot> LatestPendingSnapshot(std::string_view scope_id) 
             continue;
         }
         const auto snapshot = ReadDescriptor(entry.path());
-        if (!snapshot || snapshot->scope_id != scope_id) {
+        if (!snapshot || !snapshot->content_verified || snapshot->scope_id != scope_id) {
             continue;
         }
         if (!latest || snapshot->created_at > latest->created_at) {
@@ -983,9 +1233,41 @@ std::optional<PendingSnapshot> LatestPendingSnapshot(std::string_view scope_id) 
     return latest;
 }
 
+// A pending chain created after a confirmed local baseline is safe to continue. This avoids
+// turning an interrupted but otherwise ordinary upload into a conflict when the game is reopened.
+bool PendingMatchesLocalContent(std::string_view scope_id, std::string_view known_head,
+                                std::string_view content_digest) {
+    auto snapshot = LatestPendingSnapshot(scope_id);
+    if (!snapshot || !snapshot->content_verified || snapshot->content_digest != content_digest) {
+        return false;
+    }
+
+    std::set<std::string> visited;
+    while (true) {
+        if (!visited.insert(snapshot->snapshot_id).second) {
+            return false;
+        }
+        if (snapshot->parent_snapshot_id == known_head) {
+            return true;
+        }
+        if (snapshot->parent_snapshot_id.empty()) {
+            return known_head.empty();
+        }
+        const auto parent =
+            ReadDescriptor(PendingDirectory() / (snapshot->parent_snapshot_id + ".json"));
+        if (!parent || !parent->content_verified || parent->scope_id != scope_id) {
+            return false;
+        }
+        snapshot = parent;
+    }
+}
+
 // A failed compare-and-swap upload is retained locally for recovery. Until the user resolves that
 // conflict explicitly, it must also block a later automatic cloud restore of the working save.
-bool HasRetainedConflict(std::string_view scope_id) {
+bool RetainedConflictMatchesContent(std::string_view scope_id, std::string_view content_digest) {
+    if (content_digest.empty()) {
+        return false;
+    }
     std::error_code error;
     const auto directory = PendingDirectory() / "conflicts";
     if (!fs::is_directory(directory, error) || error) {
@@ -1000,7 +1282,8 @@ bool HasRetainedConflict(std::string_view scope_id) {
             continue;
         }
         const auto snapshot = ReadDescriptor(entry.path());
-        if (snapshot && snapshot->scope_id == scope_id) {
+        if (snapshot && snapshot->scope_id == scope_id &&
+            snapshot->content_digest == content_digest) {
             return true;
         }
     }
@@ -1029,8 +1312,7 @@ std::optional<std::string> ReadBinaryFile(const fs::path& path) {
 }
 
 fs::path DeviceIdentityPath() {
-    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" /
-           "device.json";
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "save_sync" / "device.json";
 }
 
 std::string DevicePlatform() {
@@ -1088,7 +1370,7 @@ DeviceIdentity LoadDeviceIdentity() {
                            {"name", identity.name},
                            {"platform", identity.platform},
                            {"version", identity.version}}
-                              .dump();
+                          .dump();
             output.close();
             if (output) {
                 fs::rename(temporary, path, error);
@@ -1112,7 +1394,8 @@ httplib::Headers RequestHeaders(const Configuration& configuration) {
     const auto& device = CurrentDeviceIdentity();
     return {
         {"Authorization", "Bearer " + configuration.token},
-        {"User-Agent", "Eden-SaveSync/1"},
+        {"User-Agent", "Eden-SaveSync/2"},
+        {"X-Eden-Save-Sync-Protocol", "2"},
         {"X-Eden-Device-ID", device.id},
         {"X-Eden-Device-Name", device.name},
         {"X-Eden-Platform", device.platform},
@@ -1147,10 +1430,10 @@ bool ServerRecentlyUnreachable() {
 }
 
 void RecordReachability(bool reachable) {
-    const auto until = reachable ? std::chrono::steady_clock::rep{0}
-                                 : (std::chrono::steady_clock::now() + UnreachableBackoff)
-                                       .time_since_epoch()
-                                       .count();
+    const auto until =
+        reachable
+            ? std::chrono::steady_clock::rep{0}
+            : (std::chrono::steady_clock::now() + UnreachableBackoff).time_since_epoch().count();
     unreachable_until.store(until, std::memory_order_relaxed);
 }
 
@@ -1185,13 +1468,12 @@ std::optional<RemoteHead> GetRemoteHead(httplib::Client& client, const Configura
     }
 }
 
-// Downloads, verifies and installs a remote snapshot. Returns the content digest of the installed
-// archive on success.
-std::optional<std::string> RestoreRemoteSnapshot(httplib::Client& client,
-                                                 const Configuration& configuration,
-                                                 std::string_view scope_id, const RemoteHead& head,
-                                                 const fs::path& destination,
-                                                 bool overwrite = false) {
+// Downloads and verifies a remote archive without changing the local save directory. This is used
+// during upgrade migration to prove a pre-existing local save is really the recorded cloud head.
+std::optional<std::vector<u8>> DownloadRemoteArchive(httplib::Client& client,
+                                                     const Configuration& configuration,
+                                                     std::string_view scope_id,
+                                                     const RemoteHead& head) {
     if (!IsIdentifier(head.id, 128) || !IsLowerHex(head.blob_id, HashSize * 2)) {
         return std::nullopt;
     }
@@ -1226,6 +1508,28 @@ std::optional<std::string> RestoreRemoteSnapshot(httplib::Client& client,
         LOG_WARNING(Core, "Save Sync could not decompress the remote snapshot");
         return std::nullopt;
     }
+    return archive;
+}
+
+std::optional<std::string> RemoteSnapshotContentDigest(httplib::Client& client,
+                                                       const Configuration& configuration,
+                                                       std::string_view scope_id,
+                                                       const RemoteHead& head) {
+    const auto archive = DownloadRemoteArchive(client, configuration, scope_id, head);
+    return archive ? ContentDigest(configuration, *archive) : std::nullopt;
+}
+
+// Downloads, verifies and installs a remote snapshot. Returns the content digest of the installed
+// archive on success.
+std::optional<std::string> RestoreRemoteSnapshot(httplib::Client& client,
+                                                 const Configuration& configuration,
+                                                 std::string_view scope_id, const RemoteHead& head,
+                                                 const fs::path& destination,
+                                                 bool overwrite = false) {
+    auto archive = DownloadRemoteArchive(client, configuration, scope_id, head);
+    if (!archive) {
+        return std::nullopt;
+    }
     auto content = ContentDigest(configuration, *archive);
     if (!content || !RestoreArchive(*archive, destination, head.id, overwrite)) {
         LOG_WARNING(Core,
@@ -1236,36 +1540,44 @@ std::optional<std::string> RestoreRemoteSnapshot(httplib::Client& client,
     return content;
 }
 
-UploadResult UploadSnapshot(httplib::Client& client, const Configuration& configuration,
-                            const PendingSnapshot& snapshot) {
+UploadResult UploadSnapshotBlob(httplib::Client& client, const Configuration& configuration,
+                                const PendingSnapshot& snapshot) {
     const auto headers = RequestHeaders(configuration);
-    {
-        const auto blob = ReadBinaryFile(snapshot.blob_path);
-        if (!blob) {
-            LOG_ERROR(Core, "Save Sync pending blob {} is unavailable",
-                      snapshot.blob_path.string());
-            return UploadResult::Conflict;
-        }
-        const auto upload = client.Put(fmt::format("/v1/blobs/{}", snapshot.blob_id), headers,
-                                       *blob, "application/octet-stream");
-        RecordReachability(static_cast<bool>(upload));
-        if (!upload || (upload->status != 201 && upload->status != 204)) {
-            LOG_WARNING(Core, "Save Sync could not upload snapshot blob {}", snapshot.blob_id);
-            return UploadResult::Retry;
-        }
+    const auto blob = ReadBinaryFile(snapshot.blob_path);
+    if (!blob) {
+        LOG_ERROR(Core, "Save Sync pending blob {} is unavailable", snapshot.blob_path.string());
+        return UploadResult::Retry;
     }
+    const auto upload = client.Put(fmt::format("/v1/blobs/{}", snapshot.blob_id), headers, *blob,
+                                   "application/octet-stream");
+    RecordReachability(static_cast<bool>(upload));
+    if (!upload || (upload->status != 201 && upload->status != 204)) {
+        LOG_WARNING(Core, "Save Sync could not upload snapshot blob {}", snapshot.blob_id);
+        return UploadResult::Retry;
+    }
+    return UploadResult::Success;
+}
 
-    const json metadata = {
+json SnapshotMetadata(const PendingSnapshot& snapshot) {
+    return {
         {"id", snapshot.snapshot_id},
         {"blob", snapshot.blob_id},
         {"parent", snapshot.parent_snapshot_id},
         {"created_at", snapshot.created_at},
     };
+}
+
+UploadResult UploadSnapshot(httplib::Client& client, const Configuration& configuration,
+                            const PendingSnapshot& snapshot) {
+    if (UploadSnapshotBlob(client, configuration, snapshot) != UploadResult::Success) {
+        return UploadResult::Retry;
+    }
+    const auto headers = RequestHeaders(configuration);
     auto commit_headers = headers;
     commit_headers.emplace("If-Match", fmt::format("\"{}\"", snapshot.parent_snapshot_id));
     const auto commit = client.Put(
         fmt::format("/v1/scopes/{}/snapshots/{}", snapshot.scope_id, snapshot.snapshot_id),
-        commit_headers, metadata.dump(), "application/json");
+        commit_headers, SnapshotMetadata(snapshot).dump(), "application/json");
     if (!commit) {
         LOG_WARNING(Core, "Save Sync could not commit snapshot {}", snapshot.snapshot_id);
         return UploadResult::Retry;
@@ -1282,6 +1594,29 @@ UploadResult UploadSnapshot(httplib::Client& client, const Configuration& config
     return UploadResult::Success;
 }
 
+// A rejected branch is uploaded separately from normal compare-and-swap commits. It is immutable
+// server-side and deliberately cannot advance the cloud head without an explicit restore action.
+UploadResult UploadConflictSnapshot(httplib::Client& client, const Configuration& configuration,
+                                    const PendingSnapshot& snapshot) {
+    if (UploadSnapshotBlob(client, configuration, snapshot) != UploadResult::Success) {
+        return UploadResult::Retry;
+    }
+    const auto commit = client.Put(
+        fmt::format("/v1/scopes/{}/conflicts/{}", snapshot.scope_id, snapshot.snapshot_id),
+        RequestHeaders(configuration), SnapshotMetadata(snapshot).dump(), "application/json");
+    if (!commit) {
+        LOG_WARNING(Core, "Save Sync could not retain conflict snapshot {}", snapshot.snapshot_id);
+        return UploadResult::Retry;
+    }
+    if (commit->status != 201 && commit->status != 200) {
+        // A concurrent restore can briefly make the candidate's parent current again. Retrying the
+        // ordinary compare-and-swap path keeps that race safe without discarding the local copy.
+        LOG_WARNING(Core, "Save Sync conflict retention returned HTTP {}", commit->status);
+        return UploadResult::Retry;
+    }
+    return UploadResult::Success;
+}
+
 bool RetainConflict(const PendingSnapshot& snapshot) {
     const auto conflict_directory = snapshot.descriptor_path.parent_path() / "conflicts";
     const auto conflict_blob = conflict_directory / snapshot.blob_path.filename();
@@ -1291,28 +1626,93 @@ bool RetainConflict(const PendingSnapshot& snapshot) {
     if (error) {
         return false;
     }
-    if (!fs::exists(conflict_blob, error)) {
+    if (fs::exists(conflict_descriptor, error)) {
         if (error) {
             return false;
         }
-        if (fs::exists(snapshot.blob_path, error)) {
-            if (error) {
-                return false;
-            }
+    } else {
+        if (error) {
+            return false;
+        }
+        // The server committed this copy before we get here. Move the descriptor first so an
+        // interruption can at worst leave a harmless orphaned pending blob, never an unmarked
+        // local conflict that a later retry cannot locate.
+        fs::rename(snapshot.descriptor_path, conflict_descriptor, error);
+        if (error) {
+            return false;
+        }
+    }
+
+    error.clear();
+    if (!fs::exists(conflict_blob, error) && !error) {
+        if (fs::exists(snapshot.blob_path, error) && !error) {
             fs::rename(snapshot.blob_path, conflict_blob, error);
             if (error) {
-                return false;
+                LOG_WARNING(Core, "Save Sync left a retained conflict blob in the pending queue");
             }
         }
     }
-    if (fs::exists(conflict_descriptor, error)) {
-        return !error;
+    error.clear();
+    if (fs::exists(snapshot.descriptor_path, error) && !error) {
+        fs::remove(snapshot.descriptor_path, error);
+        if (error) {
+            LOG_WARNING(Core, "Save Sync left a duplicate pending conflict descriptor");
+        }
     }
-    if (error) {
+    // A retained descriptor is sufficient: the immutable server copy is already durable.
+    return true;
+}
+
+// Conflict copies reach this directory only after game-save has committed its immutable server
+// copy. Once the user promotes the same content to the cloud head, the local marker can be removed
+// and ordinary automatic synchronization becomes safe again.
+bool ClearResolvedConflictCopies(std::string_view scope_id, std::string_view content_digest) {
+    std::error_code error;
+    const auto directory = PendingDirectory() / "conflicts";
+    if (!fs::is_directory(directory, error) || error) {
         return false;
     }
-    fs::rename(snapshot.descriptor_path, conflict_descriptor, error);
-    return !error;
+
+    std::vector<PendingSnapshot> resolved;
+    for (const auto& entry : fs::directory_iterator(directory, error)) {
+        if (error) {
+            return false;
+        }
+        if (!entry.is_regular_file() || entry.path().extension() != ".conflict") {
+            continue;
+        }
+        const auto snapshot = ReadDescriptor(entry.path());
+        if (snapshot && snapshot->scope_id == scope_id &&
+            snapshot->content_digest == content_digest) {
+            resolved.push_back(*snapshot);
+        }
+    }
+    if (resolved.empty()) {
+        return false;
+    }
+
+    bool cleared{};
+    for (const auto& snapshot : resolved) {
+        error.clear();
+        if (!fs::remove(snapshot.descriptor_path, error) || error) {
+            LOG_WARNING(Core, "Save Sync could not clear resolved conflict {}",
+                        snapshot.snapshot_id);
+            continue;
+        }
+        cleared = true;
+        error.clear();
+        if (!fs::remove(snapshot.blob_path, error) && error) {
+            LOG_WARNING(Core, "Save Sync left resolved conflict blob {}",
+                        snapshot.blob_path.string());
+        }
+        error.clear();
+        const auto pending_blob = PendingDirectory() / (snapshot.snapshot_id + ".blob");
+        if (!fs::remove(pending_blob, error) && error) {
+            LOG_WARNING(Core, "Save Sync left resolved pending conflict blob {}",
+                        pending_blob.string());
+        }
+    }
+    return cleared;
 }
 
 std::string FolderName(const u128& user_id) {
@@ -1398,7 +1798,8 @@ std::string LabelAssociatedData(std::string_view scope_id) {
 }
 
 std::string SerializeLabel(const ScopeLabel& label) {
-    json value{{"v", 1}, {"kind", label.kind}, {"program", fmt::format("{:016X}", label.program_id)}};
+    json value{
+        {"v", 1}, {"kind", label.kind}, {"program", fmt::format("{:016X}", label.program_id)}};
     if (label.kind == "account") {
         value["user"] = label.user;
         value["name"] = label.name;
@@ -1437,8 +1838,8 @@ std::optional<ScopeLabel> DecryptLabel(const Configuration& configuration,
             .name = value.value("name", std::string{}),
         };
         const auto program = value.at("program").get<std::string>();
-        const auto [pointer, error] = std::from_chars(
-            program.data(), program.data() + program.size(), label.program_id, 16);
+        const auto [pointer, error] =
+            std::from_chars(program.data(), program.data() + program.size(), label.program_id, 16);
         if (error != std::errc{} || pointer != program.data() + program.size()) {
             return std::nullopt;
         }
@@ -1571,6 +1972,20 @@ struct Manager::Impl {
 
         std::string parent_snapshot_id = KnownHead(scope_id);
         const auto local_directory_is_empty = IsDirectoryEmpty(directory);
+        const bool has_local_save = local_directory_is_empty && !*local_directory_is_empty;
+        std::optional<std::string> local_content;
+        bool read_local_content{};
+        const auto current_local_content = [&]() -> const std::optional<std::string>& {
+            if (!read_local_content) {
+                read_local_content = true;
+                if (has_local_save) {
+                    local_content = DirectoryContentDigest(*configuration, directory);
+                }
+            }
+            return local_content;
+        };
+        bool retained_conflict_for_local{};
+
         // A local directory can be advanced safely only when its current content still matches the
         // last synchronized snapshot. Anything else may contain progress made on this device and
         // must remain local so its later upload becomes an explicit conflict instead of data loss.
@@ -1578,7 +1993,7 @@ struct Manager::Impl {
             const auto head_before_remote_check = parent_snapshot_id;
             const auto client = MakeClient(*configuration);
             if (const auto remote_head = GetRemoteHead(*client, *configuration, scope_id);
-                remote_head && !remote_head->id.empty()) {
+                remote_head) {
                 // Serialize this decision with uploads and local snapshot creation. A conflict
                 // moves from the pending queue into conflicts, and a successful upload advances
                 // the known head, so neither transition may race an automatic restore.
@@ -1589,23 +2004,82 @@ struct Manager::Impl {
                     // A local upload completed while the remote request was in flight. Do not
                     // install an older response over it; a later open will check the server again.
                     parent_snapshot_id = current_head;
+                } else if (remote_head->id.empty()) {
+                    // A confirmed 404 means this scope has no competing cloud state. An old local
+                    // cache cannot turn that first v2 upload into a conflict, and clearing it also
+                    // prevents an unchanged local save from being skipped as though it were remote.
+                    if (!QuarantinePendingChainsForEmptyRemote(scope_id)) {
+                        LOG_WARNING(Core,
+                                    "Save Sync will not upload scope {} until its stale pending "
+                                    "chain can be retained locally",
+                                    scope_id);
+                        return;
+                    }
+                    parent_snapshot_id.clear();
+                    if (!ClearKnownHead(scope_id) || !ClearKnownContent(scope_id)) {
+                        LOG_WARNING(Core,
+                                    "Save Sync could not clear a stale local baseline for empty "
+                                    "cloud scope {}",
+                                    scope_id);
+                    }
                 } else if (LatestPendingSnapshot(scope_id)) {
                     // A pending snapshot represents unsynchronized local progress.
-                } else if (HasRetainedConflict(scope_id)) {
-                    LOG_WARNING(Core,
-                                "Save Sync found a newer cloud snapshot for scope {} but an "
-                                "unresolved local conflict is retained; preserving the local save",
-                                scope_id);
+                } else if (has_local_save && current_local_content() &&
+                           RetainedConflictMatchesContent(scope_id, *current_local_content())) {
+                    const auto remote_content = RemoteSnapshotContentDigest(*client, *configuration,
+                                                                            scope_id, *remote_head);
+                    if (remote_content && *remote_content == *current_local_content() &&
+                        ClearResolvedConflictCopies(scope_id, *current_local_content())) {
+                        parent_snapshot_id = remote_head->id;
+                        if (!SetKnownHead(scope_id, remote_head->id)) {
+                            LOG_WARNING(Core,
+                                        "Save Sync could not persist the resolved conflict head");
+                        }
+                        SetKnownContent(scope_id, *remote_content);
+                        LOG_INFO(Core,
+                                 "Save Sync recognized a resolved conflict for scope {}; normal "
+                                 "automatic synchronization resumed",
+                                 scope_id);
+                    } else {
+                        retained_conflict_for_local = true;
+                        LOG_WARNING(Core,
+                                    "Save Sync found a retained conflict for scope {}; preserving "
+                                    "the local save until its cloud version is selected explicitly",
+                                    scope_id);
+                    }
                 } else {
+                    // Builds released before the content cache need one read-only proof before a
+                    // remembered head may authorize automatic replacement or a successor upload.
+                    // Matching the encrypted cloud archive is the migration baseline; timestamps
+                    // or a remembered snapshot ID alone are never sufficient.
+                    if (has_local_save && KnownContent(scope_id).empty()) {
+                        const auto remote_content = RemoteSnapshotContentDigest(
+                            *client, *configuration, scope_id, *remote_head);
+                        if (current_local_content() && remote_content &&
+                            *current_local_content() == *remote_content) {
+                            parent_snapshot_id = remote_head->id;
+                            if (!SetKnownHead(scope_id, remote_head->id)) {
+                                LOG_WARNING(Core,
+                                            "Save Sync could not persist the verified cloud head");
+                            }
+                            SetKnownContent(scope_id, *remote_content);
+                            LOG_INFO(Core,
+                                     "Save Sync verified the local migration baseline for scope {}",
+                                     scope_id);
+                        } else if (current_local_content() && remote_content) {
+                            LOG_WARNING(Core,
+                                        "Save Sync could not verify an older local save against "
+                                        "the cloud head for scope {}; preserving it as a conflict",
+                                        scope_id);
+                        }
+                    }
+
                     bool overwrite_local{};
-                    if (!*local_directory_is_empty && !parent_snapshot_id.empty() &&
+                    if (has_local_save && !parent_snapshot_id.empty() &&
                         remote_head->id != parent_snapshot_id) {
                         const auto known_content = KnownContent(scope_id);
-                        const auto local_content =
-                            known_content.empty()
-                                ? std::nullopt
-                                : DirectoryContentDigest(*configuration, directory);
-                        if (local_content && *local_content == known_content) {
+                        const auto& content = current_local_content();
+                        if (content && *content == known_content) {
                             overwrite_local = true;
                         } else if (!known_content.empty()) {
                             LOG_WARNING(
@@ -1631,12 +2105,41 @@ struct Manager::Impl {
             }
         }
 
+        // A head alone is not enough to prove that the files about to be opened are that head's
+        // content. A stale manual copy must never become a seemingly valid successor merely
+        // because this device still remembers the cloud head it originally came from.
+        bool force_conflict{};
+        {
+            std::scoped_lock pending_lock{pending_mutex};
+            if (retained_conflict_for_local) {
+                force_conflict = true;
+                LOG_WARNING(Core,
+                            "Save Sync found an unresolved local conflict for scope {}; refusing "
+                            "to advance the cloud head automatically",
+                            scope_id);
+            } else if (has_local_save && !parent_snapshot_id.empty()) {
+                const auto known_content = KnownContent(scope_id);
+                const auto& content = current_local_content();
+                const bool continues_pending =
+                    content && PendingMatchesLocalContent(scope_id, parent_snapshot_id, *content);
+                if (known_content.empty() || !content ||
+                    (*content != known_content && !continues_pending)) {
+                    force_conflict = true;
+                    LOG_WARNING(Core,
+                                "Save Sync local content no longer matches confirmed head for "
+                                "scope {}; retaining the next snapshot as a conflict",
+                                scope_id);
+                }
+            }
+        }
+
         {
             std::scoped_lock lock{scopes_mutex};
             scopes.try_emplace(local_key, TrackedScope{
                                               .scope_id = scope_id,
                                               .parent_snapshot_id = std::move(parent_snapshot_id),
                                               .directory = directory,
+                                              .force_conflict = force_conflict,
                                           });
         }
         {
@@ -1659,6 +2162,12 @@ struct Manager::Impl {
         }
         for (const auto& [_, scope] : completed_scopes) {
             Capture(*configuration, scope);
+        }
+        // A clean emulator stop is the last safe point to wait for the server to commit the
+        // snapshot. Keeping a failed upload in the local queue still preserves it for retry.
+        if (ProcessPending()) {
+            LOG_WARNING(Core, "Save Sync could not finish the final upload pass; pending snapshots "
+                              "will retry later");
         }
         {
             std::scoped_lock lock{worker_mutex};
@@ -1799,8 +2308,8 @@ struct Manager::Impl {
         }
         summary.succeeded = true;
 
-        const auto root = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) / "user" /
-                          "save" / "0000000000000000" / local_user;
+        const auto root = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) / "user" / "save" /
+                          "0000000000000000" / local_user;
         for (const auto* entry : selected) {
             const auto destination = root / fmt::format("{:016X}", entry->label->program_id);
             const auto empty = IsDirectoryEmpty(destination);
@@ -1915,9 +2424,9 @@ private:
             if (item.label) {
                 const auto text = SerializeLabel(*item.label);
                 label_digest =
-                    ContentDigest(*configuration, std::span<const u8>{
-                                                      reinterpret_cast<const u8*>(text.data()),
-                                                      text.size()})
+                    ContentDigest(
+                        *configuration,
+                        std::span<const u8>{reinterpret_cast<const u8*>(text.data()), text.size()})
                         .value_or(std::string{});
                 if (!label_digest.empty() && published[item.scope_id] == label_digest) {
                     item.label.reset();
@@ -1945,7 +2454,8 @@ private:
             }
             bool label_sent{};
             if (item.label) {
-                if (const auto descriptor = EncryptLabel(*configuration, item.scope_id, *item.label)) {
+                if (const auto descriptor =
+                        EncryptLabel(*configuration, item.scope_id, *item.label)) {
                     payload["descriptor"] = *descriptor;
                     if (!item.label->name.empty()) {
                         payload["user_name"] = item.label->name;
@@ -2022,8 +2532,7 @@ private:
         }
         return std::all_of(value.begin(), value.end(), [](char character) {
             return (character >= '0' && character <= '9') ||
-                   (character >= 'a' && character <= 'f') ||
-                   (character >= 'A' && character <= 'F');
+                   (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F');
         });
     }
 
@@ -2059,8 +2568,8 @@ private:
             }
         }
 
-        const auto root = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) /
-                          "user" / "save" / "0000000000000000";
+        const auto root = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) / "user" / "save" /
+                          "0000000000000000";
         std::error_code error;
         if (!fs::is_directory(root, error) || error) {
             return;
@@ -2101,8 +2610,8 @@ private:
                     continue;
                 }
 
-                const auto relative_path = fmt::format(
-                    "/user/save/0000000000000000/{}/{}", user_name, title_name);
+                const auto relative_path =
+                    fmt::format("/user/save/0000000000000000/{}/{}", user_name, title_name);
                 Track(FileSys::SaveDataSpaceId::User,
                       device_save ? FileSys::SaveDataType::Device : FileSys::SaveDataType::Account,
                       *title_id, user_id, relative_path);
@@ -2150,11 +2659,18 @@ private:
         return WriteScopeMap(KnownHeadsPath(), heads);
     }
 
-    // Content digest of the save as last captured or restored, used to skip unchanged snapshots.
+    bool ClearKnownHead(std::string_view scope_id) {
+        std::scoped_lock lock{known_heads_mutex};
+        return RemoveScopeMapEntry(KnownHeadsPath(), scope_id, IsSnapshotIdentifier);
+    }
+
+    // Content digest of the save after a successful upload or restore. It establishes the local
+    // baseline permitted to advance the corresponding cloud head on a later session.
     std::string KnownContent(std::string_view scope_id) {
         std::scoped_lock lock{known_contents_mutex};
         const auto contents = ReadScopeMap(KnownContentsPath(), IsContentDigest);
-        if (const auto iterator = contents.find(std::string{scope_id}); iterator != contents.end()) {
+        if (const auto iterator = contents.find(std::string{scope_id});
+            iterator != contents.end()) {
             return iterator->second;
         }
         return {};
@@ -2170,6 +2686,11 @@ private:
         }
     }
 
+    bool ClearKnownContent(std::string_view scope_id) {
+        std::scoped_lock lock{known_contents_mutex};
+        return RemoveScopeMapEntry(KnownContentsPath(), scope_id, IsContentDigest);
+    }
+
     void Capture(const Configuration& configuration, const TrackedScope& scope) {
         // Each stage releases its input before the next allocates, keeping at most two copies of
         // the save in memory.
@@ -2182,7 +2703,8 @@ private:
                 return;
             }
             content = ContentDigest(configuration, *archive).value_or(std::string{});
-            if (!content.empty() && content == KnownContent(scope.scope_id)) {
+            if (!scope.force_conflict && !content.empty() &&
+                content == KnownContent(scope.scope_id)) {
                 // Every save the game touched (or that a scan found) is captured at shutdown;
                 // unchanged ones would otherwise produce an identical upload every session.
                 LOG_DEBUG(Core, "Save Sync skipped unchanged save {}", scope.directory.string());
@@ -2199,7 +2721,12 @@ private:
         compressed = {};
         const auto blob_digest = encrypted ? Sha256(*encrypted) : std::nullopt;
         const auto snapshot_id = RandomIdentifier();
-        if (!encrypted || !blob_digest || !snapshot_id) {
+        std::optional<std::string> conflict_parent;
+        if (scope.force_conflict) {
+            conflict_parent = RandomIdentifier();
+        }
+        if (!encrypted || !blob_digest || !snapshot_id ||
+            (scope.force_conflict && !conflict_parent)) {
             LOG_WARNING(Core, "Save Sync could not encrypt {}", scope.directory.string());
             return;
         }
@@ -2215,13 +2742,34 @@ private:
             .scope_id = scope.scope_id,
             .snapshot_id = *snapshot_id,
             .blob_id = HexEncode(*blob_digest),
-            .parent_snapshot_id = scope.parent_snapshot_id,
+            .parent_snapshot_id = scope.force_conflict ? "local-unverified-" + *conflict_parent
+                                                       : scope.parent_snapshot_id,
+            .content_digest = content,
+            .content_verified = true,
             .created_at = TimestampNow(),
+            .conflict = scope.force_conflict,
             .blob_path = directory / (*snapshot_id + ".blob"),
             .descriptor_path = directory / (*snapshot_id + ".json"),
         };
         std::scoped_lock pending_lock{pending_mutex};
-        if (const auto pending_parent = LatestPendingSnapshot(scope.scope_id); pending_parent) {
+        const auto pending_parent = LatestPendingSnapshot(scope.scope_id);
+        if (scope.force_conflict && !content.empty() &&
+            RetainedConflictMatchesContent(scope.scope_id, content)) {
+            LOG_DEBUG(Core, "Save Sync already retained the local conflict for {}",
+                      scope.directory.string());
+            return;
+        }
+        if (scope.force_conflict && pending_parent && pending_parent->conflict &&
+            pending_parent->content_digest == content) {
+            LOG_DEBUG(Core, "Save Sync already queued the local conflict for {}",
+                      scope.directory.string());
+            return;
+        }
+        if (!scope.force_conflict && pending_parent && pending_parent->content_digest == content) {
+            LOG_DEBUG(Core, "Save Sync skipped already queued save {}", scope.directory.string());
+            return;
+        }
+        if (!scope.force_conflict && pending_parent) {
             snapshot.parent_snapshot_id = pending_parent->snapshot_id;
         }
         if (!WriteBytes(snapshot.blob_path, *encrypted) || !WriteDescriptor(snapshot)) {
@@ -2230,9 +2778,6 @@ private:
             fs::remove(snapshot.descriptor_path, cleanup_error);
             LOG_ERROR(Core, "Save Sync could not persist a local snapshot");
             return;
-        }
-        if (!content.empty()) {
-            SetKnownContent(scope.scope_id, content);
         }
         LOG_INFO(Core, "Save Sync created local snapshot {}", snapshot.snapshot_id);
     }
@@ -2276,6 +2821,11 @@ private:
             return false;
         }
 
+        {
+            std::scoped_lock pending_lock{pending_mutex};
+            QuarantineLegacyPendingSnapshots();
+        }
+
         std::vector<PendingSnapshot> snapshots;
         for (const auto& entry : fs::directory_iterator(directory, error)) {
             if (error) {
@@ -2284,7 +2834,8 @@ private:
             if (!entry.is_regular_file() || entry.path().extension() != ".json") {
                 continue;
             }
-            if (const auto snapshot = ReadDescriptor(entry.path())) {
+            if (const auto snapshot = ReadDescriptor(entry.path());
+                snapshot && snapshot->content_verified) {
                 snapshots.push_back(*snapshot);
             }
         }
@@ -2322,18 +2873,29 @@ private:
             for (auto iterator = ready.rbegin(); iterator != ready.rend(); ++iterator) {
                 const auto index = *iterator;
                 const auto& snapshot = snapshots[index];
-                const auto result = UploadSnapshot(*client, *configuration, snapshot);
+                bool conflict_copy = snapshot.conflict;
+                auto result = conflict_copy
+                                  ? UploadConflictSnapshot(*client, *configuration, snapshot)
+                                  : UploadSnapshot(*client, *configuration, snapshot);
                 if (result == UploadResult::Retry) {
                     retry_required = true;
                     continue;
                 }
                 if (result == UploadResult::Conflict) {
+                    result = UploadConflictSnapshot(*client, *configuration, snapshot);
+                    if (result == UploadResult::Retry) {
+                        retry_required = true;
+                        continue;
+                    }
+                    conflict_copy = true;
+                }
+                if (conflict_copy) {
                     std::scoped_lock pending_lock{pending_mutex};
                     if (!RetainConflict(snapshot)) {
                         retry_required = true;
                         continue;
                     }
-                    LOG_WARNING(Core, "Save Sync retained conflicting snapshot {}",
+                    LOG_WARNING(Core, "Save Sync uploaded immutable conflict snapshot {}",
                                 snapshot.snapshot_id);
                     snapshots.erase(snapshots.begin() + static_cast<std::ptrdiff_t>(index));
                     removed_snapshot = true;
@@ -2343,6 +2905,9 @@ private:
                     LOG_WARNING(Core, "Save Sync could not persist uploaded snapshot head");
                     retry_required = true;
                     continue;
+                }
+                if (!snapshot.content_digest.empty()) {
+                    SetKnownContent(snapshot.scope_id, snapshot.content_digest);
                 }
                 std::error_code remove_descriptor_error;
                 {
@@ -2493,11 +3058,11 @@ bool SetUserLink(std::string_view local_user_view, const UserLink& link) {
     if (link.enabled && (cloud_user.empty() || cloud_user == local_user)) {
         links.erase(local_user);
     } else {
-        links.insert_or_assign(local_user, UserLink{.cloud_user = cloud_user == local_user
-                                                                     ? std::string{}
-                                                                     : cloud_user,
-                                                    .cloud_name = link.cloud_name,
-                                                    .enabled = link.enabled});
+        links.insert_or_assign(
+            local_user,
+            UserLink{.cloud_user = cloud_user == local_user ? std::string{} : cloud_user,
+                     .cloud_name = link.cloud_name,
+                     .enabled = link.enabled});
     }
 
     json values = json::object();
