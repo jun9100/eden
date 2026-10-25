@@ -738,6 +738,26 @@ std::optional<bool> IsDirectoryEmpty(const fs::path& directory) {
     return fs::directory_iterator(directory, error) == fs::directory_iterator{} && !error;
 }
 
+// Restores must never reuse a backup name: a second manual restore of the same cloud snapshot
+// should not discard the only local copy retained by the first restore.
+std::optional<fs::path> NextRestoreBackupPath(const fs::path& parent,
+                                               std::string_view snapshot_id) {
+    const auto prefix = fmt::format(".eden-save-sync-backup-{}", snapshot_id);
+    for (std::size_t suffix = 0; suffix < 10000; ++suffix) {
+        const auto candidate =
+            parent / (suffix == 0 ? prefix : fmt::format("{}-{}", prefix, suffix));
+        std::error_code error;
+        const bool exists = fs::exists(candidate, error);
+        if (error) {
+            return std::nullopt;
+        }
+        if (!exists) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
 bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
                     std::string_view snapshot_id, bool overwrite) {
     const auto empty = IsDirectoryEmpty(destination);
@@ -760,11 +780,14 @@ bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
         fs::remove_all(staging, error);
         return false;
     }
+    std::optional<fs::path> backup;
     if (destination_exists) {
-        const fs::path backup = parent / fmt::format(".eden-save-sync-backup-{}", snapshot_id);
-        fs::remove_all(backup, error);
-        error.clear();
-        fs::rename(destination, backup, error);
+        backup = NextRestoreBackupPath(parent, snapshot_id);
+        if (!backup) {
+            fs::remove_all(staging, error);
+            return false;
+        }
+        fs::rename(destination, *backup, error);
         if (error) {
             fs::remove_all(staging, error);
             return false;
@@ -772,10 +795,9 @@ bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
     }
     fs::rename(staging, destination, error);
     if (error) {
-        if (destination_exists) {
+        if (backup) {
             std::error_code restore_error;
-            fs::rename(parent / fmt::format(".eden-save-sync-backup-{}", snapshot_id), destination,
-                       restore_error);
+            fs::rename(*backup, destination, restore_error);
         }
         fs::remove_all(staging, error);
         return false;

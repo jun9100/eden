@@ -38,6 +38,10 @@ conflict copy instead of overwriting the server version. Select the desired copy
 dashboard; when the local files match the selected cloud head, Eden clears its local conflict marker
 and resumes normal synchronization.
 
+Any explicit restore that replaces a non-empty local save first moves that save to a uniquely named
+`.eden-save-sync-backup-*` sibling directory. Eden never reuses an existing restore-backup name, so
+multiple restore attempts do not replace an earlier local recovery copy.
+
 ## Configure Eden
 
 On desktop, open `Emulation > Configure > General > Web`. On Android, open the gear icon and
