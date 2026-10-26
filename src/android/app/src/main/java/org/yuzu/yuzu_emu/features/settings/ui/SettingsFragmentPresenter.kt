@@ -37,6 +37,7 @@ import org.yuzu.yuzu_emu.utils.FullscreenHelper
 import androidx.core.content.edit
 import androidx.fragment.app.FragmentActivity
 import org.yuzu.yuzu_emu.fragments.MessageDialogFragment
+import org.yuzu.yuzu_emu.save_sync.SaveSyncStatusDialog
 import org.yuzu.yuzu_emu.save_sync.SaveSyncUsersDialog
 import org.yuzu.yuzu_emu.save_sync.SaveSyncWorker
 
@@ -533,6 +534,18 @@ class SettingsFragmentPresenter(
         sl.apply {
             val syncEnabled = BooleanSetting.SAVE_SYNC_ENABLED.getBoolean(
                 getNeedsGlobalForKey(BooleanSetting.SAVE_SYNC_ENABLED.key)
+            )
+            add(
+                RunnableSetting(
+                    titleId = R.string.save_sync_status,
+                    descriptionId = R.string.save_sync_status_description,
+                    // The dialog reports an unconfigured service itself, so
+                    // users can inspect why syncing is unavailable.
+                    isRunnable = true,
+                    iconId = R.drawable.ic_info_outline
+                ) {
+                    activity?.let { SaveSyncStatusDialog.show(it) }
+                }
             )
             add(
                 RunnableSetting(

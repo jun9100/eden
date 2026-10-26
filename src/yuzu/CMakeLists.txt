@@ -141,6 +141,8 @@ add_executable(yuzu
     configuration/configure_vibration.cpp
     configuration/configure_vibration.h
     configuration/configure_vibration.ui
+    configuration/configure_save_sync_status.cpp
+    configuration/configure_save_sync_status.h
     configuration/configure_save_sync_users.cpp
     configuration/configure_save_sync_users.h
     configuration/configure_web.cpp

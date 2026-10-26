@@ -200,6 +200,12 @@ object NativeLibrary {
     external fun getSaveSyncCloudUsers(): String
 
     /**
+     * Returns a read-only per-title synchronization report as JSON. This does not queue an upload,
+     * download a cloud save, restore local data, or modify the confirmed cloud head.
+     */
+    external fun getSaveSyncStatus(): String
+
+    /**
      * Links [localUser] to [cloudUser] and downloads that user's saves, returning a JSON summary.
      * Blocks on the network. Users are identified by their save folder names.
      */

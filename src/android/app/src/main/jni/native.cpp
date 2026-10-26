@@ -983,6 +983,54 @@ jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getSaveSyncCloudUsers(JNIEnv* env,
     return Common::Android::ToJString(env, result.dump());
 }
 
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getSaveSyncStatus(JNIEnv* env, jclass clazz) {
+    const auto report = EmulationSession::GetInstance().System().GetSaveSyncManager().FetchSyncStatus();
+    const auto snapshot_to_json = [](const Core::SaveSync::CloudSnapshotStatus& snapshot) {
+        return nlohmann::json{{"id", snapshot.id},
+                              {"parent", snapshot.parent},
+                              {"createdAt", snapshot.created_at},
+                              {"receivedAt", snapshot.received_at},
+                              {"sourceDeviceId", snapshot.source_device_id},
+                              {"sourceDeviceName", snapshot.source_device_name},
+                              {"sourceDevicePlatform", snapshot.source_device_platform},
+                              {"conflict", snapshot.conflict},
+                              {"conflictOf", snapshot.conflict_of},
+                              {"restoredOf", snapshot.restored_of}};
+    };
+
+    nlohmann::json titles = nlohmann::json::array();
+    for (const auto& status : report.titles) {
+        nlohmann::json conflicts = nlohmann::json::array();
+        for (const auto& conflict : status.conflicts) {
+            conflicts.push_back(snapshot_to_json(conflict));
+        }
+        nlohmann::json entry{{"programId", fmt::format("{:016X}", status.program_id)},
+                             {"localUser", status.local_user},
+                             {"title", status.title},
+                             {"state", Core::SaveSync::TitleSyncStateName(status.state)},
+                             {"detail", status.detail},
+                             {"localHead", status.local_head},
+                             {"cloudHead", status.cloud_head},
+                             {"snapshotCount", status.snapshot_count},
+                             {"pendingCount", status.pending_count},
+                             {"statusEndpointSupported", status.status_endpoint_supported},
+                             {"restoreBackupPresent", status.restore_backup_present},
+                             {"legacyRestoreBackupPresent",
+                              status.legacy_restore_backup_present},
+                             {"cloudHeadObjectPresent", status.cloud_head_object_present},
+                             {"conflicts", std::move(conflicts)}};
+        if (status.cloud_snapshot) {
+            entry["cloudSnapshot"] = snapshot_to_json(*status.cloud_snapshot);
+        }
+        titles.push_back(std::move(entry));
+    }
+    const nlohmann::json result{{"configured", report.configured},
+                                {"ok", report.succeeded},
+                                {"statusEndpointSupported", report.status_endpoint_supported},
+                                {"titles", std::move(titles)}};
+    return Common::Android::ToJString(env, result.dump());
+}
+
 jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_restoreSaveSyncCloudUser(JNIEnv* env, jclass clazz,
                                                                       jstring jcloud_user,
                                                                       jstring jlocal_user,
