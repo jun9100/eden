@@ -18,6 +18,7 @@
 #include <QtConcurrentRun>
 #include "common/settings.h"
 #include "core/save_sync/save_sync.h"
+#include "yuzu/configuration/configure_save_sync_status.h"
 #include "qt_common/config/uisettings.h"
 #include "yuzu/configuration/configure_save_sync_users.h"
 #include "ui_configure_web.h"
@@ -58,6 +59,8 @@ ConfigureWeb::ConfigureWeb(QWidget* parent)
             &ConfigureWeb::GenerateSaveSyncKey);
     connect(ui->button_download_save_sync, &QPushButton::clicked, this,
             &ConfigureWeb::DownloadSaveSync);
+    connect(ui->button_save_sync_status, &QPushButton::clicked, this,
+            &ConfigureWeb::OpenSaveSyncStatus);
     connect(ui->button_save_sync_users, &QPushButton::clicked, this,
             &ConfigureWeb::OpenSaveSyncUsers);
 
@@ -149,6 +152,12 @@ void ConfigureWeb::DownloadSaveSync() {
         Core::SaveSync::Manager manager;
         (void)manager.DownloadLatest();
     });
+}
+
+void ConfigureWeb::OpenSaveSyncStatus() {
+    ApplyConfiguration();
+    ConfigureSaveSyncStatus dialog(this);
+    dialog.exec();
 }
 
 void ConfigureWeb::OpenSaveSyncUsers() {

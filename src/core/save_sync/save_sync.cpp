@@ -120,6 +120,55 @@ struct RemoteHead {
     std::string blob_id;
 };
 
+struct RemoteScopeSnapshot {
+    std::string id;
+    std::string parent;
+    std::string blob_id;
+    std::string created_at;
+    std::string received_at;
+    std::string source_device_id;
+    std::string source_device_name;
+    std::string source_device_platform;
+    bool conflict{};
+    std::string conflict_of;
+    std::string restored_of;
+};
+
+struct RemoteScopeStatus {
+    std::string title;
+    std::string user_name;
+    std::optional<RemoteScopeSnapshot> head;
+    std::vector<RemoteScopeSnapshot> conflicts;
+    std::size_t snapshot_count{};
+    bool head_object_present{};
+};
+
+enum class ScopeStatusFetchResult {
+    Available,
+    NotSupported,
+    Offline,
+    Error,
+};
+
+struct ScopeStatusFetch {
+    ScopeStatusFetchResult result{ScopeStatusFetchResult::Error};
+    RemoteScopeStatus status;
+};
+
+struct PendingScopeStatus {
+    std::size_t uploads{};
+    std::size_t conflicts{};
+};
+
+struct LocalStatusScope {
+    u64 program_id{};
+    std::string local_user;
+    std::string scope_id;
+    std::string title;
+    fs::path directory;
+    bool enabled{true};
+};
+
 // Identifies the owner of a scope for other devices. It is encrypted with the sync key before it
 // leaves the device, so the server only ever sees an opaque blob.
 struct ScopeLabel {
@@ -741,8 +790,12 @@ std::optional<bool> IsDirectoryEmpty(const fs::path& directory) {
 // Restores must never reuse a backup name: a second manual restore of the same cloud snapshot
 // should not discard the only local copy retained by the first restore.
 std::optional<fs::path> NextRestoreBackupPath(const fs::path& parent,
+                                               std::string_view destination_name,
                                                std::string_view snapshot_id) {
-    const auto prefix = fmt::format(".eden-save-sync-backup-{}", snapshot_id);
+    // Include the title directory in new recovery names so the status view can identify which
+    // title owns a backup without inspecting its private save contents. Older generic names are
+    // still retained and reported as an unattributed profile-level recovery copy.
+    const auto prefix = fmt::format(".eden-save-sync-backup-{}-{}", destination_name, snapshot_id);
     for (std::size_t suffix = 0; suffix < 10000; ++suffix) {
         const auto candidate =
             parent / (suffix == 0 ? prefix : fmt::format("{}-{}", prefix, suffix));
@@ -782,7 +835,7 @@ bool RestoreArchive(std::span<const u8> archive, const fs::path& destination,
     }
     std::optional<fs::path> backup;
     if (destination_exists) {
-        backup = NextRestoreBackupPath(parent, snapshot_id);
+        backup = NextRestoreBackupPath(parent, destination.filename().string(), snapshot_id);
         if (!backup) {
             fs::remove_all(staging, error);
             return false;
@@ -1290,6 +1343,144 @@ bool RetainedConflictMatchesContent(std::string_view scope_id, std::string_view 
     return false;
 }
 
+// Inspecting the local queue is deliberately separate from ProcessPending. The status view may
+// report a queued or retained branch, but it must never retry, rename, quarantine, or remove it.
+PendingScopeStatus PendingStatusForScope(std::string_view scope_id) {
+    PendingScopeStatus result;
+    std::error_code error;
+    const auto directory = PendingDirectory();
+    if (!fs::is_directory(directory, error) || error) {
+        return result;
+    }
+    for (const auto& entry : fs::directory_iterator(directory, error)) {
+        if (error) {
+            return result;
+        }
+        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+            continue;
+        }
+        const auto snapshot = ReadDescriptor(entry.path());
+        if (!snapshot || !snapshot->content_verified || snapshot->scope_id != scope_id) {
+            continue;
+        }
+        if (snapshot->conflict) {
+            ++result.conflicts;
+        } else {
+            ++result.uploads;
+        }
+    }
+
+    const auto conflicts = directory / "conflicts";
+    error.clear();
+    if (!fs::is_directory(conflicts, error) || error) {
+        return result;
+    }
+    for (const auto& entry : fs::directory_iterator(conflicts, error)) {
+        if (error) {
+            return result;
+        }
+        if (!entry.is_regular_file() || entry.path().extension() != ".conflict") {
+            continue;
+        }
+        const auto snapshot = ReadDescriptor(entry.path());
+        if (snapshot && snapshot->scope_id == scope_id) {
+            ++result.conflicts;
+        }
+    }
+    return result;
+}
+
+struct RestoreBackupStatus {
+    bool title_backup{};
+    bool legacy_profile_backup{};
+};
+
+bool LooksLikeTitleScopedBackup(std::string_view value) {
+    const auto separator = value.find('-');
+    if (separator != 16) {
+        return false;
+    }
+    return std::ranges::all_of(value.substr(0, separator), [](const char character) {
+        return (character >= '0' && character <= '9') ||
+               (character >= 'a' && character <= 'f') ||
+               (character >= 'A' && character <= 'F');
+    });
+}
+
+RestoreBackupStatus RestoreBackupsForDirectory(const fs::path& directory) {
+    constexpr std::string_view prefix{".eden-save-sync-backup-"};
+    RestoreBackupStatus result;
+    std::error_code error;
+    const auto parent = directory.parent_path();
+    if (!fs::is_directory(parent, error) || error) {
+        return result;
+    }
+    const auto title_prefix = std::string{prefix} + directory.filename().string() + "-";
+    for (const auto& entry : fs::directory_iterator(parent, error)) {
+        if (error) {
+            return result;
+        }
+        if (!entry.is_directory(error) || error) {
+            error.clear();
+            continue;
+        }
+        const auto name = entry.path().filename().string();
+        if (!name.starts_with(prefix)) {
+            continue;
+        }
+        if (name.starts_with(title_prefix)) {
+            result.title_backup = true;
+            continue;
+        }
+        // New-format backups belonging to another title have a sixteen-character title prefix.
+        // A pre-v2 generic name cannot be attributed safely, so expose it as a profile-level
+        // recovery warning instead of guessing which game's save it contains.
+        if (!LooksLikeTitleScopedBackup(std::string_view{name}.substr(prefix.size()))) {
+            result.legacy_profile_backup = true;
+        }
+    }
+    return result;
+}
+
+CloudSnapshotStatus ToCloudSnapshotStatus(const RemoteScopeSnapshot& snapshot) {
+    return {
+        .id = snapshot.id,
+        .parent = snapshot.parent,
+        .blob = snapshot.blob_id,
+        .created_at = snapshot.created_at,
+        .received_at = snapshot.received_at,
+        .source_device_id = snapshot.source_device_id,
+        .source_device_name = snapshot.source_device_name,
+        .source_device_platform = snapshot.source_device_platform,
+        .conflict = snapshot.conflict,
+        .conflict_of = snapshot.conflict_of,
+        .restored_of = snapshot.restored_of,
+    };
+}
+
+std::optional<u64> ParseStatusProgramID(std::string_view value) {
+    if (value.size() != 16 ||
+        !std::ranges::all_of(value, [](const char character) {
+            return (character >= '0' && character <= '9') ||
+                   (character >= 'a' && character <= 'f') ||
+                   (character >= 'A' && character <= 'F');
+        })) {
+        return std::nullopt;
+    }
+    u64 result{};
+    for (const char character : value) {
+        result <<= 4;
+        if (character >= '0' && character <= '9') {
+            result |= static_cast<u64>(character - '0');
+        } else if (character >= 'a' && character <= 'f') {
+            result |= static_cast<u64>(character - 'a' + 10);
+        } else {
+            result |= static_cast<u64>(character - 'A' + 10);
+        }
+    }
+    return result;
+}
+
 std::optional<std::string> ReadBinaryFile(const fs::path& path) {
     std::error_code error;
     const auto size = fs::file_size(path, error);
@@ -1403,6 +1594,17 @@ httplib::Headers RequestHeaders(const Configuration& configuration) {
     };
 }
 
+// Status inspection is intentionally independent from device identity. Besides avoiding a
+// heartbeat on current game-save releases, this keeps a first status check from creating a local
+// device identity file or making an older server report a read as synchronization activity.
+httplib::Headers ReadOnlyRequestHeaders(const Configuration& configuration) {
+    return {
+        {"Authorization", "Bearer " + configuration.token},
+        {"User-Agent", "Eden-SaveSync/2"},
+        {"X-Eden-Save-Sync-Protocol", "2"},
+    };
+}
+
 // One client is reused for every request in a sync pass so the TCP and TLS handshakes happen once.
 std::unique_ptr<httplib::Client> MakeClient(const Configuration& configuration) {
     auto client = std::make_unique<httplib::Client>(configuration.endpoint);
@@ -1438,9 +1640,10 @@ void RecordReachability(bool reachable) {
 }
 
 std::optional<RemoteHead> GetRemoteHead(httplib::Client& client, const Configuration& configuration,
-                                        std::string_view scope_id) {
-    const auto response =
-        client.Get(fmt::format("/v1/scopes/{}/head", scope_id), RequestHeaders(configuration));
+                                        std::string_view scope_id, bool read_only = false) {
+    const auto headers =
+        read_only ? ReadOnlyRequestHeaders(configuration) : RequestHeaders(configuration);
+    const auto response = client.Get(fmt::format("/v1/scopes/{}/head", scope_id), headers);
     RecordReachability(static_cast<bool>(response));
     if (!response) {
         LOG_WARNING(Core, "Save Sync could not fetch remote head for scope {}", scope_id);
@@ -1466,6 +1669,112 @@ std::optional<RemoteHead> GetRemoteHead(httplib::Client& client, const Configura
         LOG_WARNING(Core, "Save Sync server returned invalid head metadata");
         return std::nullopt;
     }
+}
+
+bool ParseRemoteScopeSnapshot(const json& value, RemoteScopeSnapshot& snapshot) {
+    if (!value.is_object()) {
+        return false;
+    }
+    snapshot.id = value.at("id").get<std::string>();
+    snapshot.blob_id = value.at("blob").get<std::string>();
+    snapshot.parent = value.value("parent", std::string{});
+    snapshot.created_at = value.value("created_at", std::string{});
+    snapshot.received_at = value.value("received_at", std::string{});
+    snapshot.conflict = value.value("conflict", false);
+    snapshot.conflict_of = value.value("conflict_of", std::string{});
+    snapshot.restored_of = value.value("restored_of", std::string{});
+    if (!IsIdentifier(snapshot.id, 128) || !IsLowerHex(snapshot.blob_id, HashSize * 2) ||
+        (!snapshot.parent.empty() && !IsIdentifier(snapshot.parent, 128)) ||
+        (!snapshot.conflict_of.empty() && !IsIdentifier(snapshot.conflict_of, 128)) ||
+        (!snapshot.restored_of.empty() && !IsIdentifier(snapshot.restored_of, 128)) ||
+        snapshot.created_at.empty()) {
+        return false;
+    }
+
+    const auto device = value.find("device");
+    if (device == value.end() || device->is_null()) {
+        return true;
+    }
+    if (!device->is_object()) {
+        return false;
+    }
+    snapshot.source_device_id = device->value("id", std::string{});
+    snapshot.source_device_name = device->value("name", std::string{});
+    snapshot.source_device_platform = device->value("platform", std::string{});
+    return snapshot.source_device_id.empty() || IsIdentifier(snapshot.source_device_id, 128);
+}
+
+// GetRemoteScopeStatus is intentionally separate from the ordinary head reader. A 404 here means
+// the endpoint itself is absent on an older service because current game-save returns HTTP 200
+// with an empty state for a new scope. Clients can therefore preserve compatibility without
+// confusing a first backup with a transport or protocol failure.
+ScopeStatusFetch GetRemoteScopeStatus(httplib::Client& client, const Configuration& configuration,
+                                      std::string_view scope_id) {
+    ScopeStatusFetch result;
+    const auto response = client.Get(fmt::format("/v1/scopes/{}/status", scope_id),
+                                     ReadOnlyRequestHeaders(configuration));
+    RecordReachability(static_cast<bool>(response));
+    if (!response) {
+        result.result = ScopeStatusFetchResult::Offline;
+        return result;
+    }
+    if (response->status == 404) {
+        result.result = ScopeStatusFetchResult::NotSupported;
+        return result;
+    }
+    if (response->status != 200) {
+        LOG_WARNING(Core, "Save Sync status request returned HTTP {}", response->status);
+        result.result = ScopeStatusFetchResult::Error;
+        return result;
+    }
+
+    try {
+        const auto payload = json::parse(response->body);
+        if (!payload.is_object() || payload.value("scope", std::string{}) != scope_id) {
+            LOG_WARNING(Core, "Save Sync server returned an invalid scope status");
+            return result;
+        }
+        result.status.title = payload.value("title", std::string{});
+        result.status.user_name = payload.value("user_name", std::string{});
+        result.status.snapshot_count = payload.value("snapshot_count", std::size_t{});
+        result.status.head_object_present = payload.value("head_object_present", false);
+        if (result.status.snapshot_count > 100000) {
+            LOG_WARNING(Core, "Save Sync server returned an oversized scope status");
+            return result;
+        }
+        const auto head = payload.find("head");
+        if (head == payload.end()) {
+            LOG_WARNING(Core, "Save Sync server returned a scope status without a head field");
+            return result;
+        }
+        if (!head->is_null()) {
+            RemoteScopeSnapshot parsed;
+            if (!ParseRemoteScopeSnapshot(*head, parsed)) {
+                LOG_WARNING(Core, "Save Sync server returned an invalid scope head");
+                return result;
+            }
+            result.status.head = std::move(parsed);
+        }
+        const auto conflicts = payload.find("conflicts");
+        if (conflicts == payload.end() || !conflicts->is_array() || conflicts->size() > 100000) {
+            LOG_WARNING(Core, "Save Sync server returned invalid scope conflicts");
+            return result;
+        }
+        result.status.conflicts.reserve(conflicts->size());
+        for (const auto& item : *conflicts) {
+            RemoteScopeSnapshot parsed;
+            if (!ParseRemoteScopeSnapshot(item, parsed) || !parsed.conflict) {
+                LOG_WARNING(Core, "Save Sync server returned an invalid scope conflict");
+                return result;
+            }
+            result.status.conflicts.push_back(std::move(parsed));
+        }
+        result.result = ScopeStatusFetchResult::Available;
+    } catch (const json::exception&) {
+        LOG_WARNING(Core, "Save Sync server returned invalid scope status metadata");
+        result.result = ScopeStatusFetchResult::Error;
+    }
+    return result;
 }
 
 // Downloads and verifies a remote archive without changing the local save directory. This is used
@@ -2220,6 +2529,261 @@ struct Manager::Impl {
             LOG_INFO(Core, "Save Sync downloaded latest cloud snapshot {}", remote_head->id);
         }
         return succeeded;
+    }
+
+    std::vector<LocalStatusScope> CollectLocalStatusScopes(const Configuration& configuration) {
+        std::map<u64, std::string> known_titles;
+        {
+            std::scoped_lock lock{metadata_mutex};
+            for (const auto& [program_id, game_metadata] : metadata) {
+                known_titles.emplace(program_id, game_metadata.title);
+            }
+        }
+
+        std::vector<LocalStatusScope> result;
+        const auto root = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) / "user" / "save" /
+                          "0000000000000000";
+        std::error_code error;
+        if (!fs::is_directory(root, error) || error) {
+            return result;
+        }
+
+        for (const auto& user_entry : fs::directory_iterator(root, error)) {
+            if (error) {
+                return result;
+            }
+            if (!user_entry.is_directory(error) || error) {
+                error.clear();
+                continue;
+            }
+            const auto local_user = user_entry.path().filename().string();
+            if (!IsUserFolderName(local_user)) {
+                continue;
+            }
+            const bool device_save = local_user == "00000000000000000000000000000000";
+            for (const auto& title_entry : fs::directory_iterator(user_entry.path(), error)) {
+                if (error) {
+                    return result;
+                }
+                if (!title_entry.is_directory(error) || error) {
+                    error.clear();
+                    continue;
+                }
+                const auto title_name = title_entry.path().filename().string();
+                const auto program_id = ParseStatusProgramID(title_name);
+                if (!program_id) {
+                    continue;
+                }
+
+                LocalStatusScope scope{
+                    .program_id = *program_id,
+                    .local_user = UpperCase(local_user),
+                    .directory = title_entry.path(),
+                };
+                if (const auto iterator = known_titles.find(*program_id);
+                    iterator != known_titles.end()) {
+                    scope.title = iterator->second;
+                }
+
+                std::string local_key;
+                if (device_save) {
+                    local_key = fmt::format("device/{:016X}", *program_id);
+                } else {
+                    const auto link = GetUserLink(scope.local_user);
+                    if (!link.enabled) {
+                        scope.enabled = false;
+                        result.push_back(std::move(scope));
+                        continue;
+                    }
+                    const auto cloud_user =
+                        link.cloud_user.empty() ? scope.local_user : link.cloud_user;
+                    local_key = AccountScopeKey(cloud_user, *program_id);
+                }
+                if (const auto digest = ScopeDigest(configuration, local_key)) {
+                    scope.scope_id = HexEncode(*digest);
+                } else {
+                    scope.enabled = false;
+                }
+                result.push_back(std::move(scope));
+            }
+        }
+        std::ranges::sort(result, [](const LocalStatusScope& left, const LocalStatusScope& right) {
+            return std::tie(left.program_id, left.local_user) <
+                   std::tie(right.program_id, right.local_user);
+        });
+        return result;
+    }
+
+    SyncStatusReport FetchStatus() {
+        SyncStatusReport report;
+        const auto configuration = ReadConfiguration();
+        if (!configuration) {
+            return report;
+        }
+        report.configured = true;
+        const auto scopes = CollectLocalStatusScopes(*configuration);
+        if (scopes.empty()) {
+            report.succeeded = true;
+            return report;
+        }
+
+        enum class EndpointMode { Unknown, Native, Legacy };
+        EndpointMode endpoint_mode{EndpointMode::Unknown};
+        bool server_unreachable{};
+        bool query_failed{};
+        const auto client = MakeClient(*configuration);
+
+        for (const auto& scope : scopes) {
+            TitleSyncStatus item{
+                .program_id = scope.program_id,
+                .local_user = scope.local_user,
+                .title = scope.title,
+                .scope_id = scope.scope_id,
+            };
+            const auto backups = RestoreBackupsForDirectory(scope.directory);
+            item.restore_backup_present = backups.title_backup;
+            item.legacy_restore_backup_present = backups.legacy_profile_backup;
+            if (!scope.enabled || scope.scope_id.empty()) {
+                item.state = TitleSyncState::Disabled;
+                item.detail = "Save sync is disabled for this local profile.";
+                report.titles.push_back(std::move(item));
+                continue;
+            }
+
+            const auto empty = IsDirectoryEmpty(scope.directory);
+            if (!empty) {
+                item.state = TitleSyncState::Error;
+                item.detail = "The local save directory could not be inspected.";
+                query_failed = true;
+                report.titles.push_back(std::move(item));
+                continue;
+            }
+            std::optional<std::string> local_content;
+            if (!*empty) {
+                local_content = DirectoryContentDigest(*configuration, scope.directory);
+                if (!local_content) {
+                    item.state = TitleSyncState::Error;
+                    item.detail = "The local save content could not be verified.";
+                    query_failed = true;
+                    report.titles.push_back(std::move(item));
+                    continue;
+                }
+            }
+            item.local_head = KnownHead(scope.scope_id);
+            const auto known_content = KnownContent(scope.scope_id);
+            const auto pending = PendingStatusForScope(scope.scope_id);
+
+            std::optional<RemoteHead> remote_head;
+            std::optional<RemoteScopeStatus> remote_status;
+            if (server_unreachable) {
+                item.state = TitleSyncState::Offline;
+                item.detail = "The sync server is unreachable.";
+                query_failed = true;
+                report.titles.push_back(std::move(item));
+                continue;
+            }
+            if (endpoint_mode != EndpointMode::Legacy) {
+                auto fetched = GetRemoteScopeStatus(*client, *configuration, scope.scope_id);
+                if (fetched.result == ScopeStatusFetchResult::Available) {
+                    endpoint_mode = EndpointMode::Native;
+                    remote_status = std::move(fetched.status);
+                    item.status_endpoint_supported = true;
+                    if (!remote_status->title.empty()) {
+                        item.title = remote_status->title;
+                    }
+                    item.snapshot_count = remote_status->snapshot_count;
+                    item.cloud_head_object_present = remote_status->head_object_present;
+                    if (remote_status->head) {
+                        remote_head = RemoteHead{.id = remote_status->head->id,
+                                                 .blob_id = remote_status->head->blob_id};
+                        item.cloud_head = remote_head->id;
+                        item.cloud_snapshot = ToCloudSnapshotStatus(*remote_status->head);
+                    }
+                    for (const auto& conflict : remote_status->conflicts) {
+                        item.conflicts.push_back(ToCloudSnapshotStatus(conflict));
+                    }
+                    // A CAS head without its encrypted object is not a usable recovery point.
+                    // Never present that state as current merely because the local digest still
+                    // matches a previously confirmed head.
+                    if (remote_status->head && !remote_status->head_object_present) {
+                        item.state = TitleSyncState::Error;
+                        item.detail =
+                            "The authoritative cloud snapshot object is missing from the server.";
+                        query_failed = true;
+                        report.titles.push_back(std::move(item));
+                        continue;
+                    }
+                } else if (fetched.result == ScopeStatusFetchResult::NotSupported) {
+                    endpoint_mode = EndpointMode::Legacy;
+                } else {
+                    item.state = fetched.result == ScopeStatusFetchResult::Offline
+                                     ? TitleSyncState::Offline
+                                     : TitleSyncState::Error;
+                    item.detail = fetched.result == ScopeStatusFetchResult::Offline
+                                      ? "The sync server is unreachable."
+                                      : "The sync server rejected its status response.";
+                    server_unreachable = fetched.result == ScopeStatusFetchResult::Offline;
+                    query_failed = true;
+                    report.titles.push_back(std::move(item));
+                    continue;
+                }
+            }
+            if (endpoint_mode == EndpointMode::Legacy) {
+                remote_head = GetRemoteHead(*client, *configuration, scope.scope_id, true);
+                if (!remote_head) {
+                    item.state = ServerRecentlyUnreachable() ? TitleSyncState::Offline
+                                                             : TitleSyncState::Error;
+                    item.detail = item.state == TitleSyncState::Offline
+                                      ? "The sync server is unreachable."
+                                      : "The legacy sync server did not return a valid head.";
+                    server_unreachable = item.state == TitleSyncState::Offline;
+                    query_failed = true;
+                    report.titles.push_back(std::move(item));
+                    continue;
+                }
+                item.cloud_head = remote_head->id;
+                item.snapshot_count = remote_head->id.empty() ? 0 : 1;
+                item.detail =
+                    "Legacy server: source device and retained conflict copies are unavailable.";
+            }
+
+            const bool has_conflict = pending.conflicts > 0 || !item.conflicts.empty();
+            item.pending_count = pending.uploads;
+            if (has_conflict) {
+                item.state = TitleSyncState::Conflict;
+            } else if (pending.uploads > 0) {
+                item.state = TitleSyncState::UploadPending;
+            } else if (!remote_head || remote_head->id.empty()) {
+                item.state = *empty ? TitleSyncState::UpToDate : TitleSyncState::UploadPending;
+            } else if (*empty) {
+                item.state = TitleSyncState::DownloadPending;
+            } else if (item.local_head == remote_head->id && !known_content.empty() &&
+                       *local_content == known_content) {
+                item.state = TitleSyncState::UpToDate;
+            } else if (!known_content.empty() && *local_content == known_content) {
+                item.state = TitleSyncState::DownloadPending;
+            } else {
+                // The local directory cannot prove it is the cloud head. Treat it as a conflict
+                // candidate rather than letting the status view imply a timestamp-based winner.
+                item.state = TitleSyncState::Conflict;
+                if (item.detail.empty()) {
+                    item.detail = "Local content differs from the last confirmed cloud head.";
+                }
+            }
+            if (item.restore_backup_present) {
+                item.detail += (item.detail.empty() ? "" : " ") +
+                               std::string{"A title-specific restore backup is present."};
+            }
+            if (item.legacy_restore_backup_present) {
+                item.detail += (item.detail.empty() ? "" : " ") +
+                               std::string{"An older profile-level restore backup is present."};
+            }
+            report.titles.push_back(std::move(item));
+        }
+
+        report.succeeded = !query_failed;
+        report.status_endpoint_supported = endpoint_mode == EndpointMode::Native;
+        return report;
     }
 
     CloudCatalog FetchCatalog() {
@@ -2997,6 +3561,30 @@ CloudCatalog Manager::FetchCloudCatalog() {
 RestoreSummary Manager::RestoreCloudUser(std::string_view cloud_user, std::string_view local_user,
                                          bool overwrite) {
     return impl->RestoreUser(cloud_user, local_user, overwrite);
+}
+
+SyncStatusReport Manager::FetchSyncStatus() {
+    return impl->FetchStatus();
+}
+
+std::string_view TitleSyncStateName(TitleSyncState state) {
+    switch (state) {
+    case TitleSyncState::UpToDate:
+        return "up_to_date";
+    case TitleSyncState::UploadPending:
+        return "upload_pending";
+    case TitleSyncState::DownloadPending:
+        return "download_pending";
+    case TitleSyncState::Conflict:
+        return "conflict";
+    case TitleSyncState::Offline:
+        return "offline";
+    case TitleSyncState::Error:
+        return "error";
+    case TitleSyncState::Disabled:
+        return "disabled";
+    }
+    return "error";
 }
 
 std::string NormalizeEndpoint(std::string_view endpoint) {

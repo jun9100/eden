@@ -598,6 +598,35 @@
     <string name="save_sync_link_disabled">Do not sync</string>
     <string name="save_sync_link_to">Cloud user %1$s</string>
     <string name="save_sync_link_failed">Could not save the sync setting for this user.</string>
+    <string name="save_sync_status">Sync status</string>
+    <string name="save_sync_status_description">View the authoritative cloud version and retained conflicts. This does not upload, download, restore, or replace saves.</string>
+    <string name="save_sync_status_loading">Reading save sync status…</string>
+    <string name="save_sync_status_not_configured">Save sync is not configured.</string>
+    <string name="save_sync_status_empty">No local save scopes are available to inspect yet.</string>
+    <string name="save_sync_status_partial">Some scopes could not be read. The results below are still read-only.</string>
+    <string name="save_sync_status_summary">%1$s · %2$s · %3$d conflict(s)</string>
+    <string name="save_sync_status_title_id">Title ID: %1$s</string>
+    <string name="save_sync_status_local_profile">Local profile: %1$s</string>
+    <string name="save_sync_status_state">State: %1$s</string>
+    <string name="save_sync_status_cloud_head">Cloud head: %1$s</string>
+    <string name="save_sync_status_local_head">Local confirmed head: %1$s</string>
+    <string name="save_sync_status_versions">Recoverable versions: %1$d</string>
+    <string name="save_sync_status_pending">Pending local snapshot(s): %1$d</string>
+    <string name="save_sync_status_source">Cloud head source: %1$s · %2$s</string>
+    <string name="save_sync_status_restore_backup">A title-specific restore backup is present.</string>
+    <string name="save_sync_status_legacy_restore_backup">An older profile-level restore backup is present.</string>
+    <string name="save_sync_status_conflicts">Conflicts</string>
+    <string name="save_sync_status_no_conflicts">No retained conflicts.</string>
+    <string name="save_sync_status_conflict_summary">%1$s · %2$s · %3$s</string>
+    <string name="save_sync_status_unnamed_title">Title %1$s</string>
+    <string name="save_sync_status_unknown_device">Unknown device</string>
+    <string name="save_sync_status_up_to_date">Up to date</string>
+    <string name="save_sync_status_upload_pending">Upload pending</string>
+    <string name="save_sync_status_download_pending">Download pending</string>
+    <string name="save_sync_status_conflict">Conflict needs review</string>
+    <string name="save_sync_status_offline">Server unavailable</string>
+    <string name="save_sync_status_disabled">Disabled for this profile</string>
+    <string name="save_sync_status_error">Status could not be verified</string>
 
     <!-- Graphics settings strings -->
     <string name="renderer_resolution">Resolution (Handheld/Docked)</string>

@@ -582,6 +582,35 @@
     <string name="save_sync_link_disabled">不同步</string>
     <string name="save_sync_link_to">云端用户 %1$s</string>
     <string name="save_sync_link_failed">无法保存该用户的同步设置。</string>
+    <string name="save_sync_status">同步状态</string>
+    <string name="save_sync_status_description">查看云端权威版本和保留的冲突副本；不会上传、下载、恢复或覆盖存档。</string>
+    <string name="save_sync_status_loading">正在读取存档同步状态…</string>
+    <string name="save_sync_status_not_configured">尚未配置存档同步。</string>
+    <string name="save_sync_status_empty">暂时没有可检查的本机存档范围。</string>
+    <string name="save_sync_status_partial">部分存档范围无法读取；以下结果仍然只读。</string>
+    <string name="save_sync_status_summary">%1$s · %2$s · %3$d 个冲突</string>
+    <string name="save_sync_status_title_id">Title ID：%1$s</string>
+    <string name="save_sync_status_local_profile">本机用户：%1$s</string>
+    <string name="save_sync_status_state">状态：%1$s</string>
+    <string name="save_sync_status_cloud_head">云端权威 head：%1$s</string>
+    <string name="save_sync_status_local_head">本机已确认 head：%1$s</string>
+    <string name="save_sync_status_versions">可恢复版本：%1$d</string>
+    <string name="save_sync_status_pending">待上传本机快照：%1$d</string>
+    <string name="save_sync_status_source">云端 head 来源：%1$s · %2$s</string>
+    <string name="save_sync_status_restore_backup">存在此游戏专用的恢复前备份。</string>
+    <string name="save_sync_status_legacy_restore_backup">存在旧版用户级恢复前备份。</string>
+    <string name="save_sync_status_conflicts">冲突副本</string>
+    <string name="save_sync_status_no_conflicts">没有保留的冲突副本。</string>
+    <string name="save_sync_status_conflict_summary">%1$s · %2$s · %3$s</string>
+    <string name="save_sync_status_unnamed_title">游戏 %1$s</string>
+    <string name="save_sync_status_unknown_device">未知设备</string>
+    <string name="save_sync_status_up_to_date">已与云端一致</string>
+    <string name="save_sync_status_upload_pending">等待上传</string>
+    <string name="save_sync_status_download_pending">等待下载</string>
+    <string name="save_sync_status_conflict">发现冲突，需人工确认</string>
+    <string name="save_sync_status_offline">服务器不可用</string>
+    <string name="save_sync_status_disabled">此本机用户已禁用同步</string>
+    <string name="save_sync_status_error">无法验证同步状态</string>
 
     <!-- Graphics settings strings -->
     <string name="renderer_resolution">分辨率 (掌机模式/主机模式)</string>
